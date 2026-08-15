@@ -1,9 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geolocator_android/geolocator_android.dart';
-import 'package:geolocator_apple/geolocator_apple.dart';
 
 import '../models/status_models.dart';
 import 'user_repository.dart';
@@ -43,36 +40,14 @@ class LocationStatusService {
       throw Exception('אין הרשאת מיקום');
     }
 
-    LocationSettings settings;
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      settings = AndroidSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 20,
-        intervalDuration: const Duration(seconds: 8),
-        foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationTitle: 'מצב אוטומטי פעיל',
-          notificationText: 'מזהה נסיעה ואזורים שהגדרת',
-          enableWakeLock: true,
-        ),
-      );
-    } else if (defaultTargetPlatform == TargetPlatform.iOS ||
-        defaultTargetPlatform == TargetPlatform.macOS) {
-      settings = AppleSettings(
-        accuracy: LocationAccuracy.high,
-        activityType: ActivityType.automotiveNavigation,
-        distanceFilter: 20,
-        pauseLocationUpdatesAutomatically: true,
-        showBackgroundLocationIndicator: true,
-      );
-    } else {
-      settings = const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 20,
-      );
-    }
+    const settings = LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 20,
+    );
 
-    _subscription = Geolocator.getPositionStream(locationSettings: settings)
-        .listen(_handlePosition);
+    _subscription = Geolocator.getPositionStream(
+      locationSettings: settings,
+    ).listen(_handlePosition);
   }
 
   Future<void> stop() async {

@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
 import '../services/user_repository.dart';
 
+const _internalTest = bool.fromEnvironment('MATZAV_INTERNAL_TEST');
+
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
 
@@ -24,14 +26,14 @@ class _AuthScreenState extends State<AuthScreen> {
       await UserRepository.instance.ensureUserProfile(result.user!);
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message ?? e.code)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(e.message ?? e.code)));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('שגיאה: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('שגיאה: $e')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -61,28 +63,29 @@ class _AuthScreenState extends State<AuthScreen> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   const SizedBox(height: 32),
-                  TextField(
-                    controller: _email,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(
-                      labelText: 'אימייל',
-                      border: OutlineInputBorder(),
+                  if (!_internalTest) ...[
+                    TextField(
+                      controller: _email,
+                      keyboardType: TextInputType.emailAddress,
+                      decoration: const InputDecoration(
+                        labelText: 'אימייל',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _password,
-                    obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: 'סיסמה',
-                      border: OutlineInputBorder(),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _password,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'סיסמה',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton(
-                    onPressed: _busy
-                        ? null
-                        : () => _run(
+                    const SizedBox(height: 12),
+                    FilledButton(
+                      onPressed: _busy
+                          ? null
+                          : () => _run(
                               () => _register
                                   ? AuthService.instance.registerWithEmail(
                                       _email.text,
@@ -93,19 +96,30 @@ class _AuthScreenState extends State<AuthScreen> {
                                       _password.text,
                                     ),
                             ),
-                    child: Text(_register ? 'הרשמה באימייל' : 'כניסה באימייל'),
-                  ),
-                  TextButton(
-                    onPressed: _busy
-                        ? null
-                        : () => setState(() => _register = !_register),
-                    child: Text(
-                      _register
-                          ? 'כבר רשום? עבור לכניסה'
-                          : 'חדש? עבור להרשמה',
+                      child: Text(
+                        _register ? 'הרשמה באימייל' : 'כניסה באימייל',
+                      ),
                     ),
-                  ),
+                    TextButton(
+                      onPressed: _busy
+                          ? null
+                          : () => setState(() => _register = !_register),
+                      child: Text(
+                        _register
+                            ? 'כבר רשום? עבור לכניסה'
+                            : 'חדש? עבור להרשמה',
+                      ),
+                    ),
+                  ],
                   const Divider(height: 32),
+                  if (_internalTest) ...[
+                    const Text(
+                      'Internal test: continue with Google using mikron30@gmail.com.',
+                      textAlign: TextAlign.center,
+                      textDirection: TextDirection.ltr,
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   OutlinedButton.icon(
                     onPressed: _busy
                         ? null
@@ -113,18 +127,19 @@ class _AuthScreenState extends State<AuthScreen> {
                     icon: const Icon(Icons.account_circle_outlined),
                     label: const Text('המשך עם Google'),
                   ),
-                  const SizedBox(height: 10),
-                  OutlinedButton.icon(
-                    onPressed: _busy
-                        ? null
-                        : () => Navigator.of(context).push(
+                  if (!_internalTest) const SizedBox(height: 10),
+                  if (!_internalTest)
+                    OutlinedButton.icon(
+                      onPressed: _busy
+                          ? null
+                          : () => Navigator.of(context).push(
                               MaterialPageRoute(
                                 builder: (_) => const PhoneAuthScreen(),
                               ),
                             ),
-                    icon: const Icon(Icons.phone_android),
-                    label: const Text('המשך עם טלפון'),
-                  ),
+                      icon: const Icon(Icons.phone_android),
+                      label: const Text('המשך עם טלפון'),
+                    ),
                   if (_busy) ...[
                     const SizedBox(height: 20),
                     const Center(child: CircularProgressIndicator()),
@@ -174,9 +189,9 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
       onError: (error) {
         if (!mounted) return;
         setState(() => _busy = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(error.message ?? error.code)),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message ?? error.code)));
       },
     );
   }
@@ -193,9 +208,9 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
       await _finish(credential);
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message ?? e.code)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(e.message ?? e.code)));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -242,7 +257,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
             if (_busy) ...[
               const SizedBox(height: 16),
               const CircularProgressIndicator(),
-            ]
+            ],
           ],
         ),
       ),

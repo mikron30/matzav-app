@@ -1,32 +1,27 @@
 # Platform permissions
 
 ## Android: android/app/src/main/AndroidManifest.xml
-Add under `<manifest>`:
+
+The first Google Play test release uses contacts and location only while the app is visible. Add under `<manifest>`:
 
 ```xml
+<uses-permission android:name="android.permission.INTERNET" />
 <uses-permission android:name="android.permission.READ_CONTACTS" />
-<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 ```
 
-For production Android 13+ / 14+, request background location in a user-friendly staged flow and explain why it is needed.
+Do not add background-location or location foreground-service permissions until the app includes Android's staged permission flow, a prominent disclosure, a privacy policy, and the corresponding Google Play declarations.
 
 ## iOS: ios/Runner/Info.plist
-Add:
+
+The first test release also uses location only while the app is visible. Add:
 
 ```xml
 <key>NSContactsUsageDescription</key>
-<string>אנחנו מציגים את אנשי הקשר רק כדי שתוכל לבחור חברים להוספה.</string>
+<string>Matzav shows contacts only so you can choose friends to add.</string>
 <key>NSLocationWhenInUseUsageDescription</key>
-<string>המיקום משמש לזיהוי נסיעה ואזורים שהגדרת.</string>
-<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-<string>המיקום משמש לעדכון מצב אוטומטי גם כשהאפליקציה ברקע.</string>
-<key>UIBackgroundModes</key>
-<array>
-  <string>location</string>
-</array>
+<string>Matzav uses your location to detect driving and zones while the app is open.</string>
 ```
 
-In Xcode enable Background Modes > Location updates.
+Do not enable the iOS location background mode or add the `Always` usage descriptions until background behavior and its disclosure flow are implemented.

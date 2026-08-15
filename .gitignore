@@ -17,6 +17,8 @@ ios/Runner/GoogleService-Info.plist
 lib/firebase_options.dart
 .firebase/
 firebase-debug.log
+firebase.internal-test.json
+firestore.internal-test.rules
 
 # Secrets / signing
 .env
