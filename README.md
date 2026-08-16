@@ -5,6 +5,7 @@ Matzav is a Flutter/Firebase app for sharing friends' current activity and avail
 ## MVP
 
 - Email/password and Google authentication
+- Sign in with Apple on iOS
 - Add selected friends from contacts
 - Invite non-users through the OS share sheet
 - Realtime friend status through Firestore
@@ -23,6 +24,30 @@ Platform folders are included in the repository. Firebase configuration files an
 4. Apply permissions from `SETUP_PERMISSIONS.md`.
 5. Deploy `firestore.rules`.
 6. Run `flutter run`.
+
+## Google Sign-In diagnostic on Windows
+
+The Android production package is `com.mikron30.matzav`. After downloading a fresh `android/app/google-services.json`, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\check_google_auth_config.ps1
+```
+
+The checker verifies that the file belongs to the production package and contains the required Web OAuth client (`client_type: 3`).
+
+## iOS without a local Mac
+
+The repository contains a Codemagic workflow in `codemagic.yaml`. The iOS production bundle ID is `com.mikron30.matzav`.
+
+Before the first iOS build:
+
+1. Register `com.mikron30.matzav` as a new Apple app in the same Firebase project.
+2. Enable Google and Apple providers in Firebase Authentication.
+3. Add `GoogleService-Info.plist` to Codemagic as the base64 secret `GOOGLE_SERVICE_INFO_PLIST_BASE64` in the `firebase_ios` group.
+4. Join the Apple Developer Program, create the App ID with Sign in with Apple enabled, and create the App Store Connect app record.
+5. Add App Store Connect API credentials to Codemagic in the `appstore_credentials` group.
+
+`scripts/prepare_ios_ci.sh` configures the Google iOS client ID/URL scheme and the iOS bundle ID during the cloud build.
 
 ## Firebase files intentionally not committed
 
