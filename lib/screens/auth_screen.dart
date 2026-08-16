@@ -1,5 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 
 import '../services/auth_service.dart';
 import '../services/user_repository.dart';
@@ -41,6 +43,9 @@ class _AuthScreenState extends State<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final showAppleSignIn =
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
     return Scaffold(
       body: SafeArea(
         child: Center(
@@ -127,6 +132,16 @@ class _AuthScreenState extends State<AuthScreen> {
                     icon: const Icon(Icons.account_circle_outlined),
                     label: const Text('המשך עם Google'),
                   ),
+                  if (showAppleSignIn) ...[
+                    const SizedBox(height: 10),
+                    SignInWithAppleButton(
+                      onPressed: _busy
+                          ? null
+                          : () => _run(AuthService.instance.signInWithApple),
+                      style: SignInWithAppleButtonStyle.black,
+                      height: 50,
+                    ),
+                  ],
                   if (_busy) ...[
                     const SizedBox(height: 20),
                     const Center(child: CircularProgressIndicator()),
