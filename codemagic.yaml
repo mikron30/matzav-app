@@ -1,0 +1,52 @@
+workflows:
+  ios-production:
+    name: Matzav iOS production
+    max_build_duration: 60
+    environment:
+      groups:
+        - appstore_credentials
+        - firebase_ios
+      vars:
+        BUNDLE_ID: com.mikron30.matzav
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+
+    scripts:
+      - name: Install Flutter dependencies
+        script: flutter pub get
+
+      - name: Restore Firebase iOS configuration
+        script: |
+          if [ -z "${GOOGLE_SERVICE_INFO_PLIST_BASE64:-}" ]; then
+            echo "GOOGLE_SERVICE_INFO_PLIST_BASE64 is missing"
+            exit 1
+          fi
+          echo "$GOOGLE_SERVICE_INFO_PLIST_BASE64" | base64 --decode > ios/Runner/GoogleService-Info.plist
+
+      - name: Prepare iOS project
+        script: |
+          chmod +x scripts/prepare_ios_ci.sh
+          ./scripts/prepare_ios_ci.sh
+
+      - name: Set up iOS code signing
+        script: |
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          keychain add-certificates
+          xcode-project use-profiles
+
+      - name: Build IPA
+        script: |
+          flutter build ipa --release --build-number="$BUILD_NUMBER"
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        submit_to_testflight: false
