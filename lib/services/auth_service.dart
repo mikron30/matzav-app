@@ -40,6 +40,13 @@ class AuthService {
     return _auth.signInWithCredential(credential);
   }
 
+  Future<UserCredential> signInWithApple() {
+    final provider = AppleAuthProvider();
+    provider.addScope('email');
+    provider.addScope('name');
+    return _auth.signInWithProvider(provider);
+  }
+
   Future<void> signOut() async {
     await _auth.signOut();
     try {
