@@ -43,11 +43,14 @@ Before the first iOS build:
 
 1. Register `com.mikron30.matzav` as a new Apple app in the same Firebase project.
 2. Enable Google and Apple providers in Firebase Authentication.
-3. Add `GoogleService-Info.plist` to Codemagic as the base64 secret `GOOGLE_SERVICE_INFO_PLIST_BASE64` in the `firebase_ios` group.
-4. Join the Apple Developer Program, create the App ID with Sign in with Apple enabled, and create the App Store Connect app record.
-5. Add App Store Connect API credentials to Codemagic in the `appstore_credentials` group.
+3. Generate a fresh `GoogleService-Info.plist` and `lib/firebase_options.dart` for the new iOS app.
+4. Add both to Codemagic as base64 secrets in the `firebase_ios` group:
+   - `GOOGLE_SERVICE_INFO_PLIST_BASE64`
+   - `FIREBASE_OPTIONS_DART_BASE64`
+5. Join the Apple Developer Program, create the App ID with Sign in with Apple enabled, and create the App Store Connect app record.
+6. Add App Store Connect API credentials to Codemagic in the `appstore_credentials` group.
 
-`scripts/prepare_ios_ci.sh` configures the Google iOS client ID/URL scheme and the iOS bundle ID during the cloud build.
+`scripts/prepare_ios_ci.sh` configures the production iOS bundle ID, Sign in with Apple entitlements, and the Google iOS client ID/URL scheme during the cloud build.
 
 ## Firebase files intentionally not committed
 
