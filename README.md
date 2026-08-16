@@ -4,7 +4,7 @@ Matzav is a Flutter/Firebase app for sharing friends' current activity and avail
 
 ## MVP
 
-- Email/password, Google and phone authentication
+- Email/password and Google authentication
 - Add selected friends from contacts
 - Invite non-users through the OS share sheet
 - Realtime friend status through Firestore
