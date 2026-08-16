@@ -1,27 +1,18 @@
 # Platform permissions
 
-## Android: android/app/src/main/AndroidManifest.xml
+## Android
 
-The first Google Play test release uses contacts and location only while the app is visible. Add under `<manifest>`:
+The Android app requires internet, contacts and location permissions. Verify the following permissions exist in `android/app/src/main/AndroidManifest.xml` as needed by the enabled features:
 
 ```xml
 <uses-permission android:name="android.permission.INTERNET" />
 <uses-permission android:name="android.permission.READ_CONTACTS" />
-<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 ```
 
-Do not add background-location or location foreground-service permissions until the app includes Android's staged permission flow, a prominent disclosure, a privacy policy, and the corresponding Google Play declarations.
+For future true background-location behavior, add the relevant background/foreground-service permissions only when the feature is implemented and accompanied by the required user disclosure and Play policy declarations.
 
-## iOS: ios/Runner/Info.plist
+## iOS
 
-The first test release also uses location only while the app is visible. Add:
-
-```xml
-<key>NSContactsUsageDescription</key>
-<string>Matzav shows contacts only so you can choose friends to add.</string>
-<key>NSLocationWhenInUseUsageDescription</key>
-<string>Matzav uses your location to detect driving and zones while the app is open.</string>
-```
-
-Do not enable the iOS location background mode or add the `Always` usage descriptions until background behavior and its disclosure flow are implemented.
+When building iOS, add user-facing descriptions for Contacts and Location permissions in `ios/Runner/Info.plist` and configure background location only if the production feature genuinely needs it.
