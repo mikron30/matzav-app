@@ -1,9 +1,13 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 class AuthService {
   AuthService._();
   static final instance = AuthService._();
+
+  static const String _googleWebClientId =
+      '132247657839-84uo29ln5gj71g3ajm8t6f325ukair68.apps.googleusercontent.com';
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   bool _googleInitialized = false;
@@ -27,7 +31,13 @@ class AuthService {
 
   Future<UserCredential> signInWithGoogle() async {
     if (!_googleInitialized) {
-      await GoogleSignIn.instance.initialize();
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+        await GoogleSignIn.instance.initialize(
+          serverClientId: _googleWebClientId,
+        );
+      } else {
+        await GoogleSignIn.instance.initialize();
+      }
       _googleInitialized = true;
     }
 
