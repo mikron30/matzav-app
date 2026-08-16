@@ -10,10 +10,19 @@ class AuthService {
       '132247657839-84uo29ln5gj71g3ajm8t6f325ukair68.apps.googleusercontent.com';
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  bool _googleInitialized = false;
+  GoogleSignIn? _googleSignIn;
 
   Stream<User?> get authStateChanges => _auth.authStateChanges();
   User? get currentUser => _auth.currentUser;
+
+  GoogleSignIn get _google {
+    return _googleSignIn ??= GoogleSignIn(
+      serverClientId:
+          !kIsWeb && defaultTargetPlatform == TargetPlatform.android
+              ? _googleWebClientId
+              : null,
+    );
+  }
 
   Future<UserCredential> signInWithEmail(String email, String password) {
     return _auth.signInWithEmailAndPassword(
@@ -30,22 +39,16 @@ class AuthService {
   }
 
   Future<UserCredential> signInWithGoogle() async {
-    if (!_googleInitialized) {
-      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-        await GoogleSignIn.instance.initialize(
-          serverClientId: _googleWebClientId,
-        );
-      } else {
-        await GoogleSignIn.instance.initialize();
-      }
-      _googleInitialized = true;
+    final GoogleSignInAccount? googleUser = await _google.signIn();
+    if (googleUser == null) {
+      throw Exception('Google sign-in was canceled.');
     }
 
-    final GoogleSignInAccount googleUser =
-        await GoogleSignIn.instance.authenticate();
-    final GoogleSignInAuthentication googleAuth = googleUser.authentication;
+    final GoogleSignInAuthentication googleAuth =
+        await googleUser.authentication;
     final credential = GoogleAuthProvider.credential(
       idToken: googleAuth.idToken,
+      accessToken: googleAuth.accessToken,
     );
     return _auth.signInWithCredential(credential);
   }
@@ -60,7 +63,7 @@ class AuthService {
   Future<void> signOut() async {
     await _auth.signOut();
     try {
-      await GoogleSignIn.instance.signOut();
+      await _google.signOut();
     } catch (_) {}
   }
 }
