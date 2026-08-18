@@ -1,13 +1,9 @@
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 class AuthService {
   AuthService._();
   static final instance = AuthService._();
-
-  static const String _googleWebClientId =
-      '132247657839-84uo29ln5gj71g3ajm8t6f325ukair68.apps.googleusercontent.com';
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   GoogleSignIn? _googleSignIn;
@@ -16,12 +12,7 @@ class AuthService {
   User? get currentUser => _auth.currentUser;
 
   GoogleSignIn get _google {
-    return _googleSignIn ??= GoogleSignIn(
-      serverClientId:
-          !kIsWeb && defaultTargetPlatform == TargetPlatform.android
-              ? _googleWebClientId
-              : null,
-    );
+    return _googleSignIn ??= GoogleSignIn();
   }
 
   Future<UserCredential> signInWithEmail(String email, String password) {
