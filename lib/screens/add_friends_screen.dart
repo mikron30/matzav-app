@@ -52,13 +52,21 @@ class _AddFriendsScreenState extends State<AddFriendsScreen> {
         .toList();
 
     for (final contact in selectedContacts) {
-      final phone = contact.phones.isEmpty ? null : contact.phones.first.number;
-      final email = contact.emails.isEmpty ? null : contact.emails.first.address;
+      final phones = contact.phones
+          .map((item) => item.number.trim())
+          .where((value) => value.isNotEmpty)
+          .toList();
+      final emails = contact.emails
+          .map((item) => item.address.trim())
+          .where((value) => value.isNotEmpty)
+          .toList();
       await UserRepository.instance.addFriendContact(
         ownerUid: uid,
-        contactName: contact.displayName?.trim().isNotEmpty == true ? contact.displayName!.trim() : 'ללא שם',
-        phone: phone,
-        email: email,
+        contactName: contact.displayName?.trim().isNotEmpty == true
+            ? contact.displayName!.trim()
+            : 'ללא שם',
+        phones: phones,
+        emails: emails,
       );
     }
 
@@ -111,9 +119,9 @@ class _AddFriendsScreenState extends State<AddFriendsScreen> {
                       final id = contact.id;
                       final selected = id != null && _selected.contains(id);
                       final details = [
-                        if (contact.phones.isNotEmpty) contact.phones.first.number,
-                        if (contact.emails.isNotEmpty) contact.emails.first.address,
-                      ].join(' • ');
+                        ...contact.phones.map((item) => item.number),
+                        ...contact.emails.map((item) => item.address),
+                      ].where((value) => value.trim().isNotEmpty).join(' • ');
                       final displayName = contact.displayName?.trim().isNotEmpty == true
                           ? contact.displayName!.trim()
                           : 'ללא שם';
