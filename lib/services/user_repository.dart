@@ -27,6 +27,11 @@ class UserRepository {
     return '+$digits';
   }
 
+  bool isValidPhone(String value) {
+    final normalized = normalizePhone(value);
+    return RegExp(r'^\+[0-9]{8,15}$').hasMatch(normalized);
+  }
+
   String identityHash(String type, String normalizedValue) {
     final input = utf8.encode('$type:$normalizedValue');
     return sha256.convert(input).toString();
@@ -37,9 +42,24 @@ class UserRepository {
     final privateRef = _db.collection('private_users').doc(user.uid);
 
     final existing = await profileRef.get();
+    final existingPrivate = await privateRef.get();
     final displayName = (user.displayName?.trim().isNotEmpty ?? false)
         ? user.displayName!.trim()
         : (user.email?.split('@').first ?? user.phoneNumber ?? 'חבר');
+
+    final authPhone = user.phoneNumber?.trim();
+    final storedPhone = existingPrivate.data()?['phone'] as String?;
+    final effectivePhone = authPhone != null && authPhone.isNotEmpty
+        ? normalizePhone(authPhone)
+        : storedPhone;
+
+    final privateData = <String, dynamic>{
+      'email': user.email,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    if (effectivePhone != null && effectivePhone.trim().isNotEmpty) {
+      privateData['phone'] = normalizePhone(effectivePhone);
+    }
 
     final batch = _db.batch();
     batch.set(
@@ -55,15 +75,7 @@ class UserRepository {
       SetOptions(merge: true),
     );
 
-    batch.set(
-      privateRef,
-      {
-        'email': user.email,
-        'phone': user.phoneNumber,
-        'updatedAt': FieldValue.serverTimestamp(),
-      },
-      SetOptions(merge: true),
-    );
+    batch.set(privateRef, privateData, SetOptions(merge: true));
 
     if (user.email != null && user.email!.trim().isNotEmpty) {
       final normalized = normalizeEmail(user.email!);
@@ -75,8 +87,8 @@ class UserRepository {
       });
     }
 
-    if (user.phoneNumber != null && user.phoneNumber!.trim().isNotEmpty) {
-      final normalized = normalizePhone(user.phoneNumber!);
+    if (effectivePhone != null && effectivePhone.trim().isNotEmpty) {
+      final normalized = normalizePhone(effectivePhone);
       final hash = identityHash('phone', normalized);
       batch.set(_db.collection('public_ids').doc(hash), {
         'uid': user.uid,
@@ -86,6 +98,53 @@ class UserRepository {
     }
 
     await batch.commit();
+  }
+
+  Future<String?> getRegisteredPhone(String uid) async {
+    final doc = await _db.collection('private_users').doc(uid).get();
+    final phone = doc.data()?['phone'] as String?;
+    if (phone == null || phone.trim().isEmpty) return null;
+    return phone.trim();
+  }
+
+  Future<void> registerPhoneNumber({
+    required String uid,
+    required String phone,
+  }) async {
+    final normalized = normalizePhone(phone);
+    if (!isValidPhone(normalized)) {
+      throw Exception('מספר הטלפון אינו תקין');
+    }
+
+    final hash = identityHash('phone', normalized);
+    final publicRef = _db.collection('public_ids').doc(hash);
+    final existing = await publicRef.get();
+    final existingOwner = existing.data()?['ownerUid'] as String?;
+    if (existing.exists && existingOwner != null && existingOwner != uid) {
+      throw Exception('מספר הטלפון הזה כבר משויך למשתמש אחר');
+    }
+
+    final batch = _db.batch();
+    batch.set(
+      _db.collection('private_users').doc(uid),
+      {
+        'phone': normalized,
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
+    batch.set(
+      publicRef,
+      {
+        'uid': uid,
+        'kind': 'phone',
+        'ownerUid': uid,
+      },
+      SetOptions(merge: true),
+    );
+    await batch.commit();
+
+    await resolvePendingFriends(uid);
   }
 
   Stream<DocumentSnapshot<Map<String, dynamic>>> profileStream(String uid) {
@@ -114,12 +173,25 @@ class UserRepository {
         .snapshots();
   }
 
-  Future<String?> findUserUidByContact({String? phone, String? email}) async {
-    final hashes = <String>[];
-    if (phone != null && phone.trim().isNotEmpty) {
+  Future<String?> findUserUidByContact({String? phone, String? email}) {
+    return findUserUidByContacts(
+      phones: phone == null ? const [] : [phone],
+      emails: email == null ? const [] : [email],
+    );
+  }
+
+  Future<String?> findUserUidByContacts({
+    Iterable<String> phones = const [],
+    Iterable<String> emails = const [],
+  }) async {
+    final hashes = <String>{};
+
+    for (final phone in phones) {
+      if (phone.trim().isEmpty) continue;
       hashes.add(identityHash('phone', normalizePhone(phone)));
     }
-    if (email != null && email.trim().isNotEmpty) {
+    for (final email in emails) {
+      if (email.trim().isEmpty) continue;
       hashes.add(identityHash('email', normalizeEmail(email)));
     }
 
@@ -138,20 +210,43 @@ class UserRepository {
     required String contactName,
     String? phone,
     String? email,
+    List<String> phones = const [],
+    List<String> emails = const [],
   }) async {
-    final friendUid = await findUserUidByContact(phone: phone, email: email);
-    final keyMaterial = '${phone ?? ''}|${email ?? ''}|$contactName';
+    final allPhones = <String>{
+      ...phones.where((value) => value.trim().isNotEmpty),
+      if (phone != null && phone.trim().isNotEmpty) phone,
+    }.toList();
+    final allEmails = <String>{
+      ...emails.where((value) => value.trim().isNotEmpty),
+      if (email != null && email.trim().isNotEmpty) email,
+    }.toList();
+
+    final friendUid = await findUserUidByContacts(
+      phones: allPhones,
+      emails: allEmails,
+    );
+    final keyMaterial = '${allPhones.join('|')}|${allEmails.join('|')}|$contactName';
     final key = sha256.convert(utf8.encode(keyMaterial)).toString().substring(0, 24);
 
     await _db.collection('users').doc(ownerUid).collection('friends').doc(key).set({
       'contactName': contactName,
-      'phone': phone,
-      'email': email,
+      'phone': allPhones.isEmpty ? null : allPhones.first,
+      'email': allEmails.isEmpty ? null : allEmails.first,
+      'phones': allPhones,
+      'emails': allEmails,
       'friendUid': friendUid,
       'state': friendUid == null ? 'pending' : 'installed',
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+  }
+
+  List<String> _stringList(dynamic value) {
+    if (value is List) {
+      return value.whereType<String>().where((item) => item.trim().isNotEmpty).toList();
+    }
+    return const [];
   }
 
   Future<void> resolvePendingFriends(String ownerUid) async {
@@ -164,9 +259,20 @@ class UserRepository {
 
     for (final doc in pending.docs) {
       final data = doc.data();
-      final friendUid = await findUserUidByContact(
-        phone: data['phone'] as String?,
-        email: data['email'] as String?,
+      final phones = <String>{
+        ..._stringList(data['phones']),
+        if ((data['phone'] as String?)?.trim().isNotEmpty == true)
+          data['phone'] as String,
+      };
+      final emails = <String>{
+        ..._stringList(data['emails']),
+        if ((data['email'] as String?)?.trim().isNotEmpty == true)
+          data['email'] as String,
+      };
+
+      final friendUid = await findUserUidByContacts(
+        phones: phones,
+        emails: emails,
       );
       if (friendUid != null && friendUid != ownerUid) {
         await doc.reference.update({
