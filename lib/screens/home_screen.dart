@@ -6,6 +6,7 @@ import '../models/status_models.dart';
 import '../services/auth_service.dart';
 import '../services/contact_invite_service.dart';
 import '../services/location_status_service.dart';
+import '../services/phone_hint_service.dart';
 import '../services/user_repository.dart';
 import 'add_friends_screen.dart';
 import 'settings_screen.dart';
@@ -19,6 +20,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   bool _automationOn = false;
+  bool _phoneSetupChecked = false;
 
   String get uid => FirebaseAuth.instance.currentUser!.uid;
 
@@ -26,6 +28,48 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     UserRepository.instance.resolvePendingFriends(uid);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensurePhoneIdentity();
+    });
+  }
+
+  Future<void> _ensurePhoneIdentity() async {
+    if (_phoneSetupChecked) return;
+    _phoneSetupChecked = true;
+
+    try {
+      final existingPhone =
+          await UserRepository.instance.getRegisteredPhone(uid);
+      if (existingPhone != null && existingPhone.isNotEmpty) return;
+
+      final hintedPhone =
+          await PhoneHintService.instance.requestPhoneNumberHint();
+      if (!mounted) return;
+
+      final selectedPhone = await showDialog<String>(
+        context: context,
+        builder: (context) => _PhoneSetupDialog(
+          initialPhone: hintedPhone ?? '',
+        ),
+      );
+      if (selectedPhone == null || selectedPhone.trim().isEmpty) return;
+
+      await UserRepository.instance.registerPhoneNumber(
+        uid: uid,
+        phone: selectedPhone,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('מספר הטלפון נשמר. מתבצע זיהוי מחדש של החברים.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('לא ניתן לשמור את מספר הטלפון: $e')),
+      );
+    }
   }
 
   @override
@@ -159,6 +203,84 @@ class _HomeScreenState extends State<HomeScreen> {
           );
         },
       ),
+    );
+  }
+}
+
+class _PhoneSetupDialog extends StatefulWidget {
+  const _PhoneSetupDialog({required this.initialPhone});
+
+  final String initialPhone;
+
+  @override
+  State<_PhoneSetupDialog> createState() => _PhoneSetupDialogState();
+}
+
+class _PhoneSetupDialogState extends State<_PhoneSetupDialog> {
+  late final TextEditingController _controller;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialPhone);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final value = _controller.text.trim();
+    if (!UserRepository.instance.isValidPhone(value)) {
+      setState(() => _error = 'נא להזין מספר טלפון תקין');
+      return;
+    }
+    Navigator.of(context).pop(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('מספר הטלפון שלי'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'המספר משמש רק כדי לזהות חברים שכבר שמרו אותך באנשי הקשר. '
+            'אם המספר שמופיע אינו נכון, אפשר להחליף אותו.',
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _controller,
+            keyboardType: TextInputType.phone,
+            textDirection: TextDirection.ltr,
+            decoration: InputDecoration(
+              labelText: 'מספר טלפון',
+              hintText: '050-1234567',
+              errorText: _error,
+              border: const OutlineInputBorder(),
+            ),
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
+            onSubmitted: (_) => _save(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('לא עכשיו'),
+        ),
+        FilledButton(
+          onPressed: _save,
+          child: const Text('שמור'),
+        ),
+      ],
     );
   }
 }
