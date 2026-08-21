@@ -35,6 +35,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check_google_auth_config.ps1
 
 The checker verifies that the file belongs to the production package and contains the required Web OAuth client (`client_type: 3`).
 
+Google Play quantum-ready signing uses separate certificates for Android 16 and earlier and for the Android 17+ hybrid signature. The checker also verifies that all three known Play signing SHA-1 certificates have Android OAuth clients. Whenever Play rotates or adds a key, register every fingerprint shown under **Protected with Play > Play Store distribution > Play app signing** with Firebase and refresh `google-services.json`.
+
 ## iOS without a local Mac
 
 The repository contains a Codemagic workflow in `codemagic.yaml`. The iOS production bundle ID is `com.mikron30.matzav`.

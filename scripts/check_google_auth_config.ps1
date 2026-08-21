@@ -1,6 +1,14 @@
 $ErrorActionPreference = "Stop"
 
 $expectedPackage = "com.mikron30.matzav"
+$requiredPlaySha1 = @(
+    # Android 16 and earlier classical fallback key.
+    "b31f0d5f2e28671f97c2c0d3cacb089e0a7c3f66",
+    # Android 17+ hybrid classical key.
+    "79c03c908964e7b5b4e682969b9cc580e61fc13d",
+    # Android 17+ hybrid post-quantum certificate.
+    "ebc5242e6e02e2ecec8b14629b70e1d288b00b08"
+)
 $configPath = Join-Path $PSScriptRoot "..\android\app\google-services.json"
 
 if (-not (Test-Path $configPath)) {
@@ -48,6 +56,27 @@ if ($androidOauth.Count -eq 0) {
     }
 }
 
+$presentAndroidSha1 = @(
+    $androidOauth |
+        ForEach-Object { [string]$_.android_info.certificate_hash } |
+        Where-Object { $_ } |
+        ForEach-Object { $_.ToLowerInvariant() }
+)
+$missingPlaySha1 = @(
+    $requiredPlaySha1 | Where-Object { $presentAndroidSha1 -notcontains $_ }
+)
+
+if ($missingPlaySha1.Count -gt 0) {
+    Write-Host "FAIL: one or more Google Play signing keys have no Android OAuth client." -ForegroundColor Red
+    foreach ($cert in $missingPlaySha1) {
+        Write-Host "  Missing Play SHA-1: $cert"
+    }
+    Write-Host "New Play apps use multiple signing keys. Register every key shown in Play app signing with Firebase."
+    exit 4
+}
+
+Write-Host "PASS: all known Google Play signing SHA-1 certificates have Android OAuth clients." -ForegroundColor Green
+
 if ($webOauth.Count -eq 0) {
     Write-Host "FAIL: no Web OAuth client (client_type 3) is present." -ForegroundColor Red
     Write-Host "Google Sign-In needs the OAuth information generated after Google is enabled in Firebase Authentication."
@@ -62,4 +91,4 @@ foreach ($oauth in $webOauth) {
 
 Write-Host ""
 Write-Host "Google Sign-In configuration file looks structurally correct." -ForegroundColor Green
-Write-Host "If Play Store sign-in still fails, compare the Play App Signing SHA-1 with the SHA-1 entries in Firebase."
+Write-Host "If Play Store sign-in still fails, inspect the certificate of the APK actually delivered to the device."
