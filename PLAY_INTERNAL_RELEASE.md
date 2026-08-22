@@ -2,13 +2,20 @@
 
 Current Android package: `com.mikron30.matzav`.
 
-For a signed release bundle, build with:
+The next Android upload is version code 13. For an internal test bundle that
+uses Google's sample banner ad, build with:
 
-```bash
+```powershell
 flutter clean
 flutter pub get
-flutter build appbundle --release
+$env:MATZAV_ADMOB_ANDROID_APP_ID = 'ca-app-pub-3940256099942544~3347511713'
+flutter build appbundle --release --dart-define=MATZAV_USE_TEST_ADS=true
+Remove-Item Env:MATZAV_ADMOB_ANDROID_APP_ID
 ```
+
+Never promote that test-ad bundle to production. A public release must be
+built with the real AdMob app and banner IDs by running
+`scripts/build_android_release.ps1`; see `MONETIZATION_SETUP.md`.
 
 The generated bundle is normally located at:
 

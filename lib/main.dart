@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -6,13 +8,14 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'firebase_options.dart';
 import 'screens/auth_screen.dart';
 import 'screens/home_screen.dart';
+import 'services/premium_service.dart';
 import 'services/user_repository.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  final premiumService = PremiumService.instance;
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  unawaited(premiumService.initialize());
   runApp(const MatzavApp());
 }
 
@@ -34,9 +37,7 @@ class MatzavApp extends StatelessWidget {
       theme: ThemeData(
         useMaterial3: true,
         colorSchemeSeed: Colors.indigo,
-        inputDecorationTheme: const InputDecorationTheme(
-          filled: true,
-        ),
+        inputDecorationTheme: const InputDecorationTheme(filled: true),
       ),
       home: const AuthGate(),
     );
@@ -58,6 +59,7 @@ class AuthGate extends StatelessWidget {
         }
         final user = snapshot.data;
         if (user == null) return const AuthScreen();
+        unawaited(PremiumService.instance.initialize(uid: user.uid));
         return FutureBuilder<void>(
           future: UserRepository.instance.ensureUserProfile(user),
           builder: (context, ensureSnapshot) {

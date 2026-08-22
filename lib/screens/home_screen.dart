@@ -1,14 +1,20 @@
+import 'dart:typed_data';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../models/friend_access_policy.dart';
 import '../models/status_models.dart';
 import '../services/auth_service.dart';
 import '../services/contact_invite_service.dart';
 import '../services/location_status_service.dart';
 import '../services/phone_hint_service.dart';
+import '../services/premium_service.dart';
 import '../services/user_repository.dart';
+import '../widgets/premium_banner.dart';
 import 'add_friends_screen.dart';
+import 'premium_screen.dart';
 import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -38,19 +44,19 @@ class _HomeScreenState extends State<HomeScreen> {
     _phoneSetupChecked = true;
 
     try {
-      final existingPhone =
-          await UserRepository.instance.getRegisteredPhone(uid);
+      final existingPhone = await UserRepository.instance.getRegisteredPhone(
+        uid,
+      );
       if (existingPhone != null && existingPhone.isNotEmpty) return;
 
-      final hintedPhone =
-          await PhoneHintService.instance.requestPhoneNumberHint();
+      final hintedPhone = await PhoneHintService.instance
+          .requestPhoneNumberHint();
       if (!mounted) return;
 
       final selectedPhone = await showDialog<String>(
         context: context,
-        builder: (context) => _PhoneSetupDialog(
-          initialPhone: hintedPhone ?? '',
-        ),
+        builder: (context) =>
+            _PhoneSetupDialog(initialPhone: hintedPhone ?? ''),
       );
       if (selectedPhone == null || selectedPhone.trim().isEmpty) return;
 
@@ -94,9 +100,9 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) setState(() => _automationOn = value);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('האוטומציה לא הופעלה: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('האוטומציה לא הופעלה: $e')));
     }
   }
 
@@ -107,10 +113,17 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('Matzav'),
         actions: [
           IconButton(
-            tooltip: 'הגדרות מיקום',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const SettingsScreen()),
-            ),
+            tooltip: 'Matzav Premium',
+            onPressed: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => PremiumScreen(uid: uid))),
+            icon: const Icon(Icons.workspace_premium_outlined),
+          ),
+          IconButton(
+            tooltip: 'הגדרות',
+            onPressed: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
             icon: const Icon(Icons.tune),
           ),
           IconButton(
@@ -125,8 +138,9 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (context, profileSnapshot) {
           final profile = profileSnapshot.data?.data() ?? {};
           final activity = activityFromString(profile['activity'] as String?);
-          final availability =
-              availabilityFromString(profile['availability'] as String?);
+          final availability = availabilityFromString(
+            profile['availability'] as String?,
+          );
           return RefreshIndicator(
             onRefresh: () => UserRepository.instance.resolvePendingFriends(uid),
             child: ListView(
@@ -152,57 +166,161 @@ class _HomeScreenState extends State<HomeScreen> {
                       _toggleAutomation(value, activity),
                 ),
                 const SizedBox(height: 22),
-                Row(
-                  children: [
-                    Text(
-                      'החברים שלי',
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                    ),
-                    const Spacer(),
-                    FilledButton.icon(
-                      onPressed: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const AddFriendsScreen(),
-                        ),
-                      ),
-                      icon: const Icon(Icons.person_add_alt_1),
-                      label: const Text('הוסף'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: UserRepository.instance.friendsStream(uid),
-                  builder: (context, snapshot) {
-                    if (!snapshot.hasData) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-                    final docs = snapshot.data!.docs;
-                    if (docs.isEmpty) {
-                      return const Card(
-                        child: Padding(
-                          padding: EdgeInsets.all(22),
-                          child: Text(
-                            'עדיין אין חברים. לחץ "הוסף" ובחר מתוך אנשי הקשר.',
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-                      );
-                    }
-                    return Column(
-                      children: docs
-                          .map((doc) => _FriendTile(friend: doc.data()))
-                          .toList(),
-                    );
-                  },
-                ),
+                _FriendsSection(uid: uid),
               ],
             ),
           );
         },
       ),
+      bottomNavigationBar: const PremiumAwareBanner(),
+    );
+  }
+}
+
+class _FriendsSection extends StatelessWidget {
+  const _FriendsSection({required this.uid});
+
+  final String uid;
+
+  Future<void> _openAddFriends(BuildContext context) {
+    return Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const AddFriendsScreen()));
+  }
+
+  Future<void> _openPremium(BuildContext context) {
+    return Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => PremiumScreen(uid: uid)));
+  }
+
+  Future<void> _removeFriend(
+    BuildContext context, {
+    required String friendId,
+    required String friendName,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('הסרת חבר'),
+        content: Text('להסיר את $friendName מרשימת החברים?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('ביטול'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('הסר'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    try {
+      await UserRepository.instance.removeFriend(
+        ownerUid: uid,
+        friendId: friendId,
+      );
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$friendName הוסר מרשימת החברים.')),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('לא ניתן להסיר את החבר: $error')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: UserRepository.instance.friendsStream(uid),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const Card(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('לא ניתן לטעון את רשימת החברים.'),
+            ),
+          );
+        }
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final docs = snapshot.data!.docs;
+        return AnimatedBuilder(
+          animation: PremiumService.instance,
+          builder: (context, _) {
+            final isPremium = PremiumService.instance.isPremium;
+            final atFreeLimit =
+                !isPremium && docs.length >= FriendAccessPolicy.freeFriendLimit;
+            return Column(
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'החברים שלי',
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            isPremium
+                                ? '${docs.length} חברים • Premium'
+                                : '${docs.length} מתוך ${FriendAccessPolicy.freeFriendLimit} בחינם',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                    FilledButton.icon(
+                      onPressed: atFreeLimit
+                          ? () => _openPremium(context)
+                          : () => _openAddFriends(context),
+                      icon: Icon(
+                        atFreeLimit
+                            ? Icons.workspace_premium
+                            : Icons.person_add_alt_1,
+                      ),
+                      label: Text(atFreeLimit ? 'Premium' : 'הוסף'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                if (docs.isEmpty)
+                  const Card(
+                    child: Padding(
+                      padding: EdgeInsets.all(22),
+                      child: Text(
+                        'עדיין אין חברים. לחץ "הוסף" ובחר מתוך אנשי הקשר.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  )
+                else
+                  ...docs.map(
+                    (doc) => _FriendTile(
+                      friend: doc.data(),
+                      onRemove: (name) => _removeFriend(
+                        context,
+                        friendId: doc.id,
+                        friendName: name,
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -276,10 +394,7 @@ class _PhoneSetupDialogState extends State<_PhoneSetupDialog> {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('לא עכשיו'),
         ),
-        FilledButton(
-          onPressed: _save,
-          child: const Text('שמור'),
-        ),
+        FilledButton(onPressed: _save, child: const Text('שמור')),
       ],
     );
   }
@@ -314,9 +429,9 @@ class _MyStatusCard extends StatelessWidget {
           children: [
             Text(
               'המצב שלי',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<ActivityStatus>(
@@ -372,26 +487,35 @@ class _MyStatusCard extends StatelessWidget {
 }
 
 class _FriendTile extends StatelessWidget {
-  const _FriendTile({required this.friend});
+  const _FriendTile({required this.friend, required this.onRemove});
 
   final Map<String, dynamic> friend;
+  final ValueChanged<String> onRemove;
 
   @override
   Widget build(BuildContext context) {
     final name = friend['contactName'] as String? ?? 'חבר';
     final friendUid = friend['friendUid'] as String?;
+    final storedPhoto = friend['contactPhoto'];
+    final contactPhoto = storedPhoto is Blob ? storedPhoto.bytes : null;
     if (friendUid == null || friendUid.isEmpty) {
       return Card(
         child: ListTile(
-          leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+          leading: _FriendAvatar(name: name, contactPhoto: contactPhoto),
           title: Text(name),
           subtitle: const Text('עדיין לא התקין/ה את האפליקציה'),
-          trailing: IconButton(
-            tooltip: 'שלח הזמנה',
-            onPressed: () => ContactInviteService.instance.shareInvite(
-              contactName: name,
-            ),
-            icon: const Icon(Icons.send_outlined),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                tooltip: 'שלח הזמנה',
+                onPressed: () => ContactInviteService.instance.shareInvite(
+                  contactName: name,
+                ),
+                icon: const Icon(Icons.send_outlined),
+              ),
+              _FriendMenu(onRemove: () => onRemove(name)),
+            ],
           ),
         ),
       );
@@ -404,29 +528,149 @@ class _FriendTile extends StatelessWidget {
         if (profile == null) {
           return Card(
             child: ListTile(
-              leading: const CircleAvatar(child: Icon(Icons.person)),
+              leading: _FriendAvatar(name: name, contactPhoto: contactPhoto),
               title: Text(name),
               subtitle: const Text('טוען מצב...'),
+              trailing: _FriendMenu(onRemove: () => onRemove(name)),
             ),
           );
         }
         final activity = activityFromString(profile['activity'] as String?);
-        final availability =
-            availabilityFromString(profile['availability'] as String?);
+        final availability = availabilityFromString(
+          profile['availability'] as String?,
+        );
+        final displayName = profile['displayName'] as String? ?? name;
+        final photoUrl = profile['photoUrl'] as String?;
         return Card(
           child: ListTile(
-            leading: CircleAvatar(
-              child: Text(activity.emoji),
+            leading: _FriendAvatar(
+              name: displayName,
+              photoUrl: photoUrl,
+              contactPhoto: contactPhoto,
+              activityEmoji: activity.emoji,
             ),
-            title: Text(profile['displayName'] as String? ?? name),
+            title: Text(displayName),
             subtitle: Text('${activity.label}  •  ${availability.label}'),
-            trailing: Text(
-              availability.emoji,
-              style: const TextStyle(fontSize: 22),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(availability.emoji, style: const TextStyle(fontSize: 22)),
+                _FriendMenu(onRemove: () => onRemove(displayName)),
+              ],
             ),
           ),
         );
       },
+    );
+  }
+}
+
+class _FriendMenu extends StatelessWidget {
+  const _FriendMenu({required this.onRemove});
+
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      tooltip: 'אפשרויות חבר',
+      onSelected: (value) {
+        if (value == 'remove') onRemove();
+      },
+      itemBuilder: (context) => const [
+        PopupMenuItem(
+          value: 'remove',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.person_remove_outlined),
+            title: Text('הסר חבר'),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _FriendAvatar extends StatelessWidget {
+  const _FriendAvatar({
+    required this.name,
+    this.photoUrl,
+    this.contactPhoto,
+    this.activityEmoji,
+  });
+
+  final String name;
+  final String? photoUrl;
+  final Uint8List? contactPhoto;
+  final String? activityEmoji;
+
+  @override
+  Widget build(BuildContext context) {
+    final validPhotoUrl = photoUrl?.trim().isNotEmpty == true ? photoUrl : null;
+    final initial = name.trim().isEmpty ? '?' : name.trim().characters.first;
+
+    return SizedBox.square(
+      dimension: 48,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Positioned.fill(
+            child: ClipOval(
+              child: validPhotoUrl == null
+                  ? _fallbackImage(context, initial)
+                  : Image.network(
+                      validPhotoUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) =>
+                          _fallbackImage(context, initial),
+                    ),
+            ),
+          ),
+          if (activityEmoji != null)
+            PositionedDirectional(
+              end: -4,
+              bottom: -4,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surface,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                  ),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(2),
+                  child: Text(
+                    activityEmoji!,
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _fallbackImage(BuildContext context, String initial) {
+    final photo = contactPhoto;
+    if (photo != null && photo.isNotEmpty) {
+      return Image.memory(
+        photo,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) =>
+            _initialAvatar(context, initial),
+      );
+    }
+    return _initialAvatar(context, initial);
+  }
+
+  Widget _initialAvatar(BuildContext context, String initial) {
+    return ColoredBox(
+      color: Theme.of(context).colorScheme.primaryContainer,
+      child: Center(
+        child: Text(initial, style: Theme.of(context).textTheme.titleMedium),
+      ),
     );
   }
 }

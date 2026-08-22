@@ -7,12 +7,16 @@ Matzav is a Flutter/Firebase app for sharing friends' current activity and avail
 - Email/password and Google authentication
 - Sign in with Apple on iOS
 - Add selected friends from contacts
+- Friend profile photos, private selected-contact thumbnail fallbacks, and confirmed friend removal
 - Invite non-users through the OS share sheet
 - Realtime friend status through Firestore
 - Activity status: home, work, meeting, driving, dog walk
 - Availability status: free to talk, can talk, do not disturb
 - Optional GPS-based automatic driving/home/work detection
 - Selected-contact discovery using normalized phone/email hashes
+- Free plan with up to seven friends
+- One-time Premium upgrade for unlimited friends and no ads
+- Consent-aware Google Mobile Ads banner for free users
 
 ## Local setup
 
@@ -24,6 +28,15 @@ Platform folders are included in the repository. Firebase configuration files an
 4. Apply permissions from `SETUP_PERMISSIONS.md`.
 5. Deploy `firestore.rules`.
 6. Run `flutter run`.
+
+## Monetization
+
+The app uses the permanent Google Play product ID `matzav_premium`. Premium
+unlocks unlimited friends and removes ads; free users can save up to seven
+friends. Real ads and purchases require Play Console and AdMob configuration
+before release. See `MONETIZATION_SETUP.md` for the exact setup and safe build
+commands. Debug builds use Google's test banner; production IDs are never
+stored in source control.
 
 ## Google Sign-In diagnostic on Windows
 

@@ -2,7 +2,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 
+import '../services/ads_service.dart';
+import '../services/premium_service.dart';
 import '../services/user_repository.dart';
+import 'premium_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -37,26 +40,89 @@ class _SettingsScreenState extends State<SettingsScreen> {
         longitude: position.longitude,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$label נשמר ברדיוס 150 מטר')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('$label נשמר ברדיוס 150 מטר')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('לא ניתן לשמור: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('לא ניתן לשמור: $e')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
+  Future<void> _showPrivacyOptions() async {
+    final error = await AdsService.instance.showPrivacyOptionsForm();
+    if (!mounted || error == null) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('לא ניתן לפתוח את הגדרות הפרטיות: ${error.message}'),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('הגדרות אוטומציה')),
+      appBar: AppBar(title: const Text('הגדרות')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          AnimatedBuilder(
+            animation: PremiumService.instance,
+            builder: (context, _) => Card(
+              child: ListTile(
+                leading: Icon(
+                  PremiumService.instance.isPremium
+                      ? Icons.verified
+                      : Icons.workspace_premium_outlined,
+                ),
+                title: Text(
+                  PremiumService.instance.isPremium
+                      ? 'Matzav Premium פעיל'
+                      : 'שדרוג ל־Matzav Premium',
+                ),
+                subtitle: Text(
+                  PremiumService.instance.isPremium
+                      ? 'חברים ללא הגבלה וללא פרסומות.'
+                      : 'יותר מ־7 חברים והסרת פרסומות.',
+                ),
+                trailing: const Icon(Icons.chevron_left),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => PremiumScreen(
+                      uid: FirebaseAuth.instance.currentUser!.uid,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          AnimatedBuilder(
+            animation: AdsService.instance,
+            builder: (context, _) => AdsService.instance.privacyOptionsRequired
+                ? Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.privacy_tip_outlined),
+                      title: const Text('אפשרויות פרטיות של פרסומות'),
+                      subtitle: const Text(
+                        'שינוי הבחירות לגבי שימוש בנתונים לפרסומות.',
+                      ),
+                      onTap: _showPrivacyOptions,
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'אוטומציה לפי מיקום',
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
           const Text(
             'עמוד על המקום הרצוי ולחץ שמירה. האפליקציה תזהה כניסה לאזור ותעדכן מצב.',
           ),

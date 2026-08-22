@@ -33,6 +33,7 @@ key.properties
 
 # Android
 android/.gradle/
+android/.kotlin/
 android/local.properties
 
 # iOS

@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import '../models/friend_access_policy.dart';
 import '../models/status_models.dart';
 
 class UserRepository {
@@ -13,6 +15,8 @@ class UserRepository {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
   static const String defaultCountryCode = '972';
+  static const int maxFriendIdentitiesPerType = 20;
+  static const int maxFriendPhotoBytes = 96 * 1024;
 
   String normalizeEmail(String value) => value.trim().toLowerCase();
 
@@ -62,18 +66,15 @@ class UserRepository {
     }
 
     final batch = _db.batch();
-    batch.set(
-      profileRef,
-      {
-        'uid': user.uid,
-        'displayName': displayName,
-        'photoUrl': user.photoURL,
-        'activity': existing.data()?['activity'] ?? ActivityStatus.home.name,
-        'availability': existing.data()?['availability'] ?? AvailabilityStatus.canTalk.name,
-        'updatedAt': FieldValue.serverTimestamp(),
-      },
-      SetOptions(merge: true),
-    );
+    batch.set(profileRef, {
+      'uid': user.uid,
+      'displayName': displayName,
+      'photoUrl': user.photoURL,
+      'activity': existing.data()?['activity'] ?? ActivityStatus.home.name,
+      'availability':
+          existing.data()?['availability'] ?? AvailabilityStatus.canTalk.name,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
 
     batch.set(privateRef, privateData, SetOptions(merge: true));
 
@@ -125,23 +126,15 @@ class UserRepository {
     }
 
     final batch = _db.batch();
-    batch.set(
-      _db.collection('private_users').doc(uid),
-      {
-        'phone': normalized,
-        'updatedAt': FieldValue.serverTimestamp(),
-      },
-      SetOptions(merge: true),
-    );
-    batch.set(
-      publicRef,
-      {
-        'uid': uid,
-        'kind': 'phone',
-        'ownerUid': uid,
-      },
-      SetOptions(merge: true),
-    );
+    batch.set(_db.collection('private_users').doc(uid), {
+      'phone': normalized,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    batch.set(publicRef, {
+      'uid': uid,
+      'kind': 'phone',
+      'ownerUid': uid,
+    }, SetOptions(merge: true));
     await batch.commit();
 
     await resolvePendingFriends(uid);
@@ -156,12 +149,13 @@ class UserRepository {
     ActivityStatus? activity,
     AvailabilityStatus? availability,
   }) async {
-    final data = <String, dynamic>{
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
+    final data = <String, dynamic>{'updatedAt': FieldValue.serverTimestamp()};
     if (activity != null) data['activity'] = activity.name;
     if (availability != null) data['availability'] = availability.name;
-    await _db.collection('profiles').doc(uid).set(data, SetOptions(merge: true));
+    await _db
+        .collection('profiles')
+        .doc(uid)
+        .set(data, SetOptions(merge: true));
   }
 
   Stream<QuerySnapshot<Map<String, dynamic>>> friendsStream(String uid) {
@@ -171,6 +165,28 @@ class UserRepository {
         .collection('friends')
         .orderBy('contactName')
         .snapshots();
+  }
+
+  Future<int> getFriendCount(String uid) async {
+    final snapshot = await _db
+        .collection('users')
+        .doc(uid)
+        .collection('friends')
+        .count()
+        .get();
+    return snapshot.count ?? 0;
+  }
+
+  Future<void> removeFriend({
+    required String ownerUid,
+    required String friendId,
+  }) {
+    return _db
+        .collection('users')
+        .doc(ownerUid)
+        .collection('friends')
+        .doc(friendId)
+        .delete();
   }
 
   Future<String?> findUserUidByContact({String? phone, String? email}) {
@@ -205,46 +221,128 @@ class UserRepository {
     return null;
   }
 
-  Future<void> addFriendContact({
+  Future<bool> addFriendContact({
     required String ownerUid,
     required String contactName,
     String? phone,
     String? email,
     List<String> phones = const [],
     List<String> emails = const [],
+    Uint8List? contactPhoto,
+    int? maxFriends,
   }) async {
     final allPhones = <String>{
-      ...phones.where((value) => value.trim().isNotEmpty),
-      if (phone != null && phone.trim().isNotEmpty) phone,
-    }.toList();
+      ...phones.where((value) => value.trim().isNotEmpty).map(normalizePhone),
+      if (phone != null && phone.trim().isNotEmpty) normalizePhone(phone),
+    }.toList()..sort();
+    if (allPhones.length > maxFriendIdentitiesPerType) {
+      allPhones.removeRange(maxFriendIdentitiesPerType, allPhones.length);
+    }
     final allEmails = <String>{
-      ...emails.where((value) => value.trim().isNotEmpty),
-      if (email != null && email.trim().isNotEmpty) email,
-    }.toList();
+      ...emails.where((value) => value.trim().isNotEmpty).map(normalizeEmail),
+      if (email != null && email.trim().isNotEmpty) normalizeEmail(email),
+    }.toList()..sort();
+    if (allEmails.length > maxFriendIdentitiesPerType) {
+      allEmails.removeRange(maxFriendIdentitiesPerType, allEmails.length);
+    }
+
+    if (allPhones.isEmpty && allEmails.isEmpty) {
+      throw const InvalidFriendContactException(
+        'לאיש הקשר אין מספר טלפון או כתובת אימייל.',
+      );
+    }
+
+    final keyMaterial =
+        'phones:${allPhones.join('|')}|emails:${allEmails.join('|')}';
+    final key = sha256
+        .convert(utf8.encode(keyMaterial))
+        .toString()
+        .substring(0, 24);
+    final friendsRef = _db
+        .collection('users')
+        .doc(ownerUid)
+        .collection('friends');
+    var friendRef = friendsRef.doc(key);
+    DocumentSnapshot<Map<String, dynamic>> existing = await friendRef.get();
+
+    if (!existing.exists) {
+      // Version 12 included the contact name and unnormalized identities in
+      // the document ID. Match those records by identity so selecting the
+      // same person after upgrading updates the existing record instead of
+      // creating a duplicate that consumes another free slot.
+      final currentFriends = await friendsRef.get();
+      QueryDocumentSnapshot<Map<String, dynamic>>? legacyMatch;
+      for (final candidate in currentFriends.docs) {
+        if (_friendMatchesIdentity(candidate.data(), allPhones, allEmails)) {
+          legacyMatch = candidate;
+          break;
+        }
+      }
+      if (legacyMatch != null) {
+        friendRef = legacyMatch.reference;
+        existing = legacyMatch;
+      } else if (maxFriends != null &&
+          currentFriends.docs.length >= maxFriends) {
+        throw const FriendLimitReachedException();
+      }
+    }
 
     final friendUid = await findUserUidByContacts(
       phones: allPhones,
       emails: allEmails,
     );
-    final keyMaterial = '${allPhones.join('|')}|${allEmails.join('|')}|$contactName';
-    final key = sha256.convert(utf8.encode(keyMaterial)).toString().substring(0, 24);
+    if (friendUid == ownerUid) {
+      throw const InvalidFriendContactException(
+        'אי אפשר להוסיף את עצמך לרשימת החברים.',
+      );
+    }
 
-    await _db.collection('users').doc(ownerUid).collection('friends').doc(key).set({
-      'contactName': contactName,
+    final data = <String, dynamic>{
+      'contactName': contactName.trim().isEmpty ? 'ללא שם' : contactName.trim(),
       'phone': allPhones.isEmpty ? null : allPhones.first,
       'email': allEmails.isEmpty ? null : allEmails.first,
       'phones': allPhones,
       'emails': allEmails,
       'friendUid': friendUid,
       'state': friendUid == null ? 'pending' : 'installed',
-      'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    };
+    if (contactPhoto != null &&
+        contactPhoto.isNotEmpty &&
+        contactPhoto.length <= maxFriendPhotoBytes) {
+      data['contactPhoto'] = Blob(Uint8List.fromList(contactPhoto));
+    }
+    if (!existing.exists) data['createdAt'] = FieldValue.serverTimestamp();
+    await friendRef.set(data, SetOptions(merge: true));
+    return !existing.exists;
+  }
+
+  bool _friendMatchesIdentity(
+    Map<String, dynamic> friend,
+    Iterable<String> normalizedPhones,
+    Iterable<String> normalizedEmails,
+  ) {
+    final storedPhones = <String>{
+      ..._stringList(friend['phones']),
+      if ((friend['phone'] as String?)?.trim().isNotEmpty == true)
+        friend['phone'] as String,
+    }.map(normalizePhone).toSet();
+    final storedEmails = <String>{
+      ..._stringList(friend['emails']),
+      if ((friend['email'] as String?)?.trim().isNotEmpty == true)
+        friend['email'] as String,
+    }.map(normalizeEmail).toSet();
+
+    return normalizedPhones.any(storedPhones.contains) ||
+        normalizedEmails.any(storedEmails.contains);
   }
 
   List<String> _stringList(dynamic value) {
     if (value is List) {
-      return value.whereType<String>().where((item) => item.trim().isNotEmpty).toList();
+      return value
+          .whereType<String>()
+          .where((item) => item.trim().isNotEmpty)
+          .toList();
     }
     return const [];
   }
@@ -275,11 +373,16 @@ class UserRepository {
         emails: emails,
       );
       if (friendUid != null && friendUid != ownerUid) {
-        await doc.reference.update({
-          'friendUid': friendUid,
-          'state': 'installed',
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+        try {
+          await doc.reference.update({
+            'friendUid': friendUid,
+            'state': 'installed',
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        } on FirebaseException catch (error) {
+          // The owner may remove a pending friend while resolution is running.
+          if (error.code != 'not-found') rethrow;
+        }
       }
     }
   }
@@ -293,11 +396,7 @@ class UserRepository {
   }) {
     return _db.collection('private_users').doc(uid).set({
       'zones': {
-        name: {
-          'lat': latitude,
-          'lng': longitude,
-          'radius': radiusMeters,
-        }
+        name: {'lat': latitude, 'lng': longitude, 'radius': radiusMeters},
       },
     }, SetOptions(merge: true));
   }

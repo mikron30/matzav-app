@@ -8,6 +8,11 @@
         android:label="Matzav"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <!-- Debug builds default to Google's sample app ID for safe testing.
+             Every release build must set MATZAV_ADMOB_ANDROID_APP_ID. -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="${matzavAdMobAppId}" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
