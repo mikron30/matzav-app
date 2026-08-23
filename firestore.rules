@@ -34,12 +34,39 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.displayName;
     }
 
+    function requesterPhone() {
+      return get(
+        /databases/$(database)/documents/private_users/$(request.auth.uid)
+      ).data.get('phone', null);
+    }
+
+    function validCrossPhoneFields() {
+      return (
+               !request.resource.data.keys().hasAny(['phone'])
+               || (
+                    requesterPhone() != null
+                    && request.resource.data.phone == requesterPhone()
+                  )
+             )
+             && (
+               !request.resource.data.keys().hasAny(['phones'])
+               || (
+                    requesterPhone() != null
+                    && request.resource.data.phones is list
+                    && request.resource.data.phones.size() == 1
+                    && request.resource.data.phones[0] == requesterPhone()
+                  )
+             );
+    }
+
     function validCrossFriendAfter(uid) {
       return signedIn()
              && uid != request.auth.uid
              && request.resource.data.friendUid == request.auth.uid
              && request.resource.data.state == 'installed'
              && request.resource.data.contactName == requesterDisplayName()
+             && request.resource.data.contactSelectedByOwner == false
+             && validCrossPhoneFields()
              && friendshipExistsAfter(
                   request.resource.data.friendshipId,
                   uid,
@@ -146,7 +173,10 @@ service cloud.firestore {
                                'friendUid',
                                'state',
                                'friendshipId',
-                               'updatedAt'
+                               'updatedAt',
+                               'contactSelectedByOwner',
+                               'phone',
+                               'phones'
                              ]));
 
         allow update: if isSelf(uid)
@@ -157,7 +187,10 @@ service cloud.firestore {
                                  'friendUid',
                                  'state',
                                  'friendshipId',
-                                 'updatedAt'
+                                 'updatedAt',
+                                 'contactSelectedByOwner',
+                                 'phone',
+                                 'phones'
                                ]));
 
         allow delete: if isSelf(uid) || validCrossFriendBefore(uid);

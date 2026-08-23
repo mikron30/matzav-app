@@ -8,6 +8,7 @@ import '../models/friend_access_policy.dart';
 import '../models/status_models.dart';
 import '../services/auth_service.dart';
 import '../services/contact_invite_service.dart';
+import '../services/direct_call_service.dart';
 import '../services/location_status_service.dart';
 import '../services/phone_hint_service.dart';
 import '../services/premium_service.dart';
@@ -492,21 +493,70 @@ class _FriendTile extends StatelessWidget {
   final Map<String, dynamic> friend;
   final ValueChanged<String> onRemove;
 
+  String? get _phoneNumber {
+    final direct = friend['phone'];
+    if (direct is String && direct.trim().isNotEmpty) {
+      return direct.trim();
+    }
+
+    final phones = friend['phones'];
+    if (phones is List) {
+      for (final value in phones) {
+        if (value is String && value.trim().isNotEmpty) {
+          return value.trim();
+        }
+      }
+    }
+    return null;
+  }
+
+  Future<void> _callFriend(BuildContext context, String displayName) async {
+    final phone = _phoneNumber;
+    if (phone == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('אין מספר טלפון זמין עבור $displayName')),
+      );
+      return;
+    }
+
+    final started = await DirectCallService.instance.callNumber(phone);
+    if (!started && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('לא ניתן להתחיל שיחה עם $displayName')),
+      );
+    }
+  }
+
+  Widget _callIcon() {
+    if (_phoneNumber == null) return const SizedBox.shrink();
+    return const Padding(
+      padding: EdgeInsetsDirectional.only(end: 4),
+      child: Icon(Icons.call_outlined, size: 20),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final name = friend['contactName'] as String? ?? 'חבר';
     final friendUid = friend['friendUid'] as String?;
     final storedPhoto = friend['contactPhoto'];
     final contactPhoto = storedPhoto is Blob ? storedPhoto.bytes : null;
+
     if (friendUid == null || friendUid.isEmpty) {
       return Card(
         child: ListTile(
+          onTap: () => _callFriend(context, name),
           leading: _FriendAvatar(name: name, contactPhoto: contactPhoto),
           title: Text(name),
-          subtitle: const Text('עדיין לא התקין/ה את האפליקציה'),
+          subtitle: Text(
+            _phoneNumber == null
+                ? 'עדיין לא התקין/ה את האפליקציה'
+                : 'עדיין לא התקין/ה את האפליקציה • לחץ להתקשר',
+          ),
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              _callIcon(),
               IconButton(
                 tooltip: 'שלח הזמנה',
                 onPressed: () => ContactInviteService.instance.shareInvite(
@@ -528,13 +578,25 @@ class _FriendTile extends StatelessWidget {
         if (profile == null) {
           return Card(
             child: ListTile(
+              onTap: () => _callFriend(context, name),
               leading: _FriendAvatar(name: name, contactPhoto: contactPhoto),
               title: Text(name),
-              subtitle: const Text('טוען מצב...'),
-              trailing: _FriendMenu(onRemove: () => onRemove(name)),
+              subtitle: Text(
+                _phoneNumber == null
+                    ? 'טוען מצב...'
+                    : 'טוען מצב... • לחץ להתקשר',
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _callIcon(),
+                  _FriendMenu(onRemove: () => onRemove(name)),
+                ],
+              ),
             ),
           );
         }
+
         final activity = activityFromString(profile['activity'] as String?);
         final availability = availabilityFromString(
           profile['availability'] as String?,
@@ -543,6 +605,7 @@ class _FriendTile extends StatelessWidget {
         final photoUrl = profile['photoUrl'] as String?;
         return Card(
           child: ListTile(
+            onTap: () => _callFriend(context, displayName),
             leading: _FriendAvatar(
               name: displayName,
               photoUrl: photoUrl,
@@ -550,10 +613,15 @@ class _FriendTile extends StatelessWidget {
               activityEmoji: activity.emoji,
             ),
             title: Text(displayName),
-            subtitle: Text('${activity.label}  •  ${availability.label}'),
+            subtitle: Text(
+              _phoneNumber == null
+                  ? '${activity.label}  •  ${availability.label}'
+                  : '${activity.label}  •  ${availability.label}  •  לחץ להתקשר',
+            ),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                _callIcon(),
                 Text(availability.emoji, style: const TextStyle(fontSize: 22)),
                 _FriendMenu(onRemove: () => onRemove(displayName)),
               ],

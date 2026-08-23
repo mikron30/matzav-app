@@ -70,7 +70,7 @@ class UserRepository {
         .doc(friendId);
   }
 
-  
+
   DocumentReference<Map<String, dynamic>> _tombstoneRef(
     String ownerUid,
     String friendUid,
@@ -395,6 +395,7 @@ class UserRepository {
       'email': allEmails.isEmpty ? null : allEmails.first,
       'phones': allPhones,
       'emails': allEmails,
+      'contactSelectedByOwner': true,
       if (contactPhoto != null &&
           contactPhoto.isNotEmpty &&
           contactPhoto.length <= maxFriendPhotoBytes)
@@ -410,6 +411,7 @@ class UserRepository {
           .where((doc) => doc.id != canonicalId)
           .map((doc) => doc.reference)
           .toList(),
+      shareOwnerPhoneWithFriend: true,
     );
     return created;
   }
@@ -455,6 +457,7 @@ class UserRepository {
       'emails': allEmails,
       'friendUid': null,
       'state': 'pending',
+      'contactSelectedByOwner': true,
       'updatedAt': FieldValue.serverTimestamp(),
       'createdAt': existingCreatedAt ?? FieldValue.serverTimestamp(),
     };
@@ -472,6 +475,7 @@ class UserRepository {
     required String friendUid,
     required Map<String, dynamic> ownerData,
     required List<DocumentReference<Map<String, dynamic>>> legacyRefs,
+    bool shareOwnerPhoneWithFriend = false,
   }) async {
     final relationshipId = _friendshipId(ownerUid, friendUid);
     final ownerRef = _friendRef(ownerUid, _installedFriendDocId(friendUid));
@@ -487,6 +491,15 @@ class UserRepository {
     final reverseName = ownerDisplayName == null || ownerDisplayName.isEmpty
         ? 'חבר'
         : ownerDisplayName;
+
+    String? ownerPhone;
+    if (shareOwnerPhoneWithFriend) {
+      final registeredPhone = await getRegisteredPhone(ownerUid);
+      if (registeredPhone != null && isValidPhone(registeredPhone)) {
+        ownerPhone = normalizePhone(registeredPhone);
+      }
+    }
+
     final tombstone = await tombstoneRef.get();
 
     final normalizedOwnerData = Map<String, dynamic>.from(ownerData)
@@ -494,6 +507,9 @@ class UserRepository {
       ..['state'] = 'installed'
       ..['friendshipId'] = relationshipId
       ..['updatedAt'] = FieldValue.serverTimestamp();
+    if (shareOwnerPhoneWithFriend) {
+      normalizedOwnerData['contactSelectedByOwner'] = true;
+    }
 
     final batch = _db.batch();
     if (tombstone.exists) batch.delete(tombstoneRef);
@@ -502,13 +518,17 @@ class UserRepository {
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
     batch.set(ownerRef, normalizedOwnerData, SetOptions(merge: true));
-    batch.set(reverseRef, {
+    final reverseData = <String, dynamic>{
       'contactName': reverseName,
       'friendUid': ownerUid,
       'state': 'installed',
       'friendshipId': relationshipId,
+      'contactSelectedByOwner': false,
       'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+      if (ownerPhone != null) 'phone': ownerPhone,
+      if (ownerPhone != null) 'phones': [ownerPhone],
+    };
+    batch.set(reverseRef, reverseData, SetOptions(merge: true));
 
     for (final legacyRef in legacyRefs) {
       if (legacyRef.path != ownerRef.path) batch.delete(legacyRef);
@@ -544,6 +564,25 @@ class UserRepository {
           .toList();
     }
     return const [];
+  }
+
+  bool _wasSelectedByOwner(Map<String, dynamic> data) {
+    final marker = data['contactSelectedByOwner'];
+    if (marker is bool) return marker;
+
+    final hasPhone =
+        _stringList(data['phones']).isNotEmpty ||
+        ((data['phone'] as String?)?.trim().isNotEmpty == true);
+    final hasEmail =
+        _stringList(data['emails']).isNotEmpty ||
+        ((data['email'] as String?)?.trim().isNotEmpty == true);
+    final hasContactPhoto = data['contactPhoto'] != null;
+
+    // Version 14/17 records did not have the marker. A reverse-generated
+    // friendship contained only the friend's uid/name/status fields, while a
+    // contact explicitly selected by the owner contained phone/email/photo
+    // identity data. This safely migrates old explicit selections.
+    return hasPhone || hasEmail || hasContactPhoto;
   }
 
   Future<void> syncFriendRelationships(String ownerUid) async {
@@ -584,6 +623,7 @@ class UserRepository {
           friendUid: friendUid,
           ownerData: Map<String, dynamic>.from(data),
           legacyRefs: [doc.reference],
+          shareOwnerPhoneWithFriend: true,
         );
       } on FirebaseException catch (error) {
         // The owner may remove a pending friend while resolution is running.
@@ -640,6 +680,7 @@ class UserRepository {
             .where((doc) => doc.id != canonicalId)
             .map((doc) => doc.reference)
             .toList(),
+        shareOwnerPhoneWithFriend: _wasSelectedByOwner(ownerData),
       );
     }
   }
