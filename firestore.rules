@@ -4,6 +4,61 @@ service cloud.firestore {
     function signedIn() { return request.auth != null; }
     function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
 
+    function validPairMembers(members) {
+      return members is list
+             && members.size() == 2
+             && members[0] != members[1];
+    }
+
+    function friendshipExistsAfter(friendshipId, uidA, uidB) {
+      return friendshipId is string
+             && existsAfter(/databases/$(database)/documents/friendships/$(friendshipId))
+             && validPairMembers(
+                  getAfter(/databases/$(database)/documents/friendships/$(friendshipId)).data.members
+                )
+             && uidA in getAfter(/databases/$(database)/documents/friendships/$(friendshipId)).data.members
+             && uidB in getAfter(/databases/$(database)/documents/friendships/$(friendshipId)).data.members;
+    }
+
+    function friendshipExistsBefore(friendshipId, uidA, uidB) {
+      return friendshipId is string
+             && exists(/databases/$(database)/documents/friendships/$(friendshipId))
+             && validPairMembers(
+                  get(/databases/$(database)/documents/friendships/$(friendshipId)).data.members
+                )
+             && uidA in get(/databases/$(database)/documents/friendships/$(friendshipId)).data.members
+             && uidB in get(/databases/$(database)/documents/friendships/$(friendshipId)).data.members;
+    }
+
+    function requesterDisplayName() {
+      return get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.displayName;
+    }
+
+    function validCrossFriendAfter(uid) {
+      return signedIn()
+             && uid != request.auth.uid
+             && request.resource.data.friendUid == request.auth.uid
+             && request.resource.data.state == 'installed'
+             && request.resource.data.contactName == requesterDisplayName()
+             && friendshipExistsAfter(
+                  request.resource.data.friendshipId,
+                  uid,
+                  request.auth.uid
+                );
+    }
+
+    function validCrossFriendBefore(uid) {
+      return signedIn()
+             && uid != request.auth.uid
+             && resource.data.friendUid == request.auth.uid
+             && resource.data.state == 'installed'
+             && friendshipExistsBefore(
+                  resource.data.friendshipId,
+                  uid,
+                  request.auth.uid
+                );
+    }
+
     // Public status/profile is readable only by exact document lookup.
     // Listing all users is intentionally denied.
     match /profiles/{uid} {
@@ -22,17 +77,90 @@ service cloud.firestore {
     match /public_ids/{hash} {
       allow get: if signedIn();
       allow list: if false;
-      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow create: if signedIn()
+                    && request.resource.data.ownerUid == request.auth.uid;
       allow update: if signedIn()
                     && resource.data.ownerUid == request.auth.uid
                     && request.resource.data.ownerUid == request.auth.uid;
       allow delete: if false;
     }
 
+    // Shared relationship marker. Either participant may create/update/delete
+    // the pair, but membership itself cannot be changed after creation.
+    match /friendships/{friendshipId} {
+      // Exact lookup is allowed to signed-in users; listing the collection is not.
+      allow get: if signedIn();
+      allow list: if false;
+
+      allow create: if signedIn()
+                    && request.resource.data.keys().hasOnly(['members', 'updatedAt'])
+                    && validPairMembers(request.resource.data.members)
+                    && request.auth.uid in request.resource.data.members;
+
+      allow update: if signedIn()
+                    && request.auth.uid in resource.data.members
+                    && request.resource.data.members == resource.data.members
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly(['updatedAt']);
+
+      allow delete: if signedIn()
+                    && request.auth.uid in resource.data.members;
+    }
+
+    // A tombstone prevents an old v13 local record from recreating a friendship
+    // after the other participant intentionally removed it.
+    match /friendship_tombstones/{friendshipId} {
+      allow get: if signedIn();
+      allow list: if false;
+
+      allow create: if signedIn()
+                    && request.resource.data.keys()
+                         .hasOnly(['members', 'deletedBy', 'deletedAt'])
+                    && validPairMembers(request.resource.data.members)
+                    && request.auth.uid in request.resource.data.members
+                    && request.resource.data.deletedBy == request.auth.uid;
+
+      allow update: if signedIn()
+                    && request.auth.uid in resource.data.members
+                    && request.resource.data.members == resource.data.members
+                    && request.resource.data.deletedBy == request.auth.uid
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly(['deletedBy', 'deletedAt']);
+
+      allow delete: if signedIn()
+                    && request.auth.uid in resource.data.members;
+    }
+
     match /users/{uid} {
       allow read, write: if isSelf(uid);
+
       match /friends/{friendId} {
-        allow read, write: if isSelf(uid);
+        allow read: if isSelf(uid);
+
+        // A user may freely manage their own list. Cross-user writes are only
+        // allowed for the symmetric record of an authenticated friendship.
+        allow create: if isSelf(uid)
+                      || (validCrossFriendAfter(uid)
+                          && request.resource.data.keys().hasOnly([
+                               'contactName',
+                               'friendUid',
+                               'state',
+                               'friendshipId',
+                               'updatedAt'
+                             ]));
+
+        allow update: if isSelf(uid)
+                      || (validCrossFriendAfter(uid)
+                          && request.resource.data.diff(resource.data)
+                               .affectedKeys().hasOnly([
+                                 'contactName',
+                                 'friendUid',
+                                 'state',
+                                 'friendshipId',
+                                 'updatedAt'
+                               ]));
+
+        allow delete: if isSelf(uid) || validCrossFriendBefore(uid);
       }
     }
   }

@@ -2,7 +2,7 @@
 
 Current Android package: `com.mikron30.matzav`.
 
-The next Android upload is version code 13. For an internal test bundle that
+The next Android upload is version code 14. For an internal test bundle that
 uses Google's sample banner ad, build with:
 
 ```powershell

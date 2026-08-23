@@ -33,7 +33,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    UserRepository.instance.resolvePendingFriends(uid);
+    UserRepository.instance.syncFriendRelationships(uid);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _ensurePhoneIdentity();
     });
@@ -142,7 +142,7 @@ class _HomeScreenState extends State<HomeScreen> {
             profile['availability'] as String?,
           );
           return RefreshIndicator(
-            onRefresh: () => UserRepository.instance.resolvePendingFriends(uid),
+            onRefresh: () => UserRepository.instance.syncFriendRelationships(uid),
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [

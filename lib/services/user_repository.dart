@@ -41,6 +41,45 @@ class UserRepository {
     return sha256.convert(input).toString();
   }
 
+  String _friendshipId(String uidA, String uidB) {
+    final members = [uidA, uidB]..sort();
+    return sha256
+        .convert(utf8.encode('friendship:${members[0]}|${members[1]}'))
+        .toString();
+  }
+
+  String _installedFriendDocId(String friendUid) {
+    return sha256
+        .convert(utf8.encode('installed:$friendUid'))
+        .toString()
+        .substring(0, 24);
+  }
+
+  List<String> _sortedMembers(String uidA, String uidB) {
+    return [uidA, uidB]..sort();
+  }
+
+  DocumentReference<Map<String, dynamic>> _friendRef(
+    String ownerUid,
+    String friendId,
+  ) {
+    return _db
+        .collection('users')
+        .doc(ownerUid)
+        .collection('friends')
+        .doc(friendId);
+  }
+
+  
+  DocumentReference<Map<String, dynamic>> _tombstoneRef(
+    String ownerUid,
+    String friendUid,
+  ) {
+    return _db
+        .collection('friendship_tombstones')
+        .doc(_friendshipId(ownerUid, friendUid));
+  }
+
   Future<void> ensureUserProfile(User user) async {
     final profileRef = _db.collection('profiles').doc(user.uid);
     final privateRef = _db.collection('private_users').doc(user.uid);
@@ -137,7 +176,7 @@ class UserRepository {
     }, SetOptions(merge: true));
     await batch.commit();
 
-    await resolvePendingFriends(uid);
+    await syncFriendRelationships(uid);
   }
 
   Stream<DocumentSnapshot<Map<String, dynamic>>> profileStream(String uid) {
@@ -180,13 +219,58 @@ class UserRepository {
   Future<void> removeFriend({
     required String ownerUid,
     required String friendId,
-  }) {
-    return _db
-        .collection('users')
-        .doc(ownerUid)
-        .collection('friends')
-        .doc(friendId)
-        .delete();
+  }) async {
+    final selectedRef = _friendRef(ownerUid, friendId);
+    final selectedSnapshot = await selectedRef.get();
+    if (!selectedSnapshot.exists) return;
+
+    final data = selectedSnapshot.data() ?? const <String, dynamic>{};
+    final friendUid = data['friendUid'] as String?;
+    if (friendUid == null || friendUid.isEmpty) {
+      await selectedRef.delete();
+      return;
+    }
+
+    final relationshipId = _friendshipId(ownerUid, friendUid);
+    final friendshipRef = _db.collection('friendships').doc(relationshipId);
+    final friendshipSnapshot = await friendshipRef.get();
+
+    // Old version-13 records may not have a shared friendship marker yet.
+    // Create it first so the cross-user delete is authorized by the v14 rules.
+    if (!friendshipSnapshot.exists) {
+      await _upsertInstalledRelationship(
+        ownerUid: ownerUid,
+        friendUid: friendUid,
+        ownerData: Map<String, dynamic>.from(data),
+        legacyRefs: const [],
+      );
+    }
+
+    final canonicalOwnerRef = _friendRef(
+      ownerUid,
+      _installedFriendDocId(friendUid),
+    );
+    final reverseRef = _friendRef(
+      friendUid,
+      _installedFriendDocId(ownerUid),
+    );
+    final tombstoneRef = _db
+        .collection('friendship_tombstones')
+        .doc(relationshipId);
+
+    final batch = _db.batch();
+    batch.set(tombstoneRef, {
+      'members': _sortedMembers(ownerUid, friendUid),
+      'deletedBy': ownerUid,
+      'deletedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    batch.delete(selectedRef);
+    if (canonicalOwnerRef.path != selectedRef.path) {
+      batch.delete(canonicalOwnerRef);
+    }
+    batch.delete(reverseRef);
+    batch.delete(friendshipRef);
+    await batch.commit();
   }
 
   Future<String?> findUserUidByContact({String? phone, String? email}) {
@@ -238,6 +322,7 @@ class UserRepository {
     if (allPhones.length > maxFriendIdentitiesPerType) {
       allPhones.removeRange(maxFriendIdentitiesPerType, allPhones.length);
     }
+
     final allEmails = <String>{
       ...emails.where((value) => value.trim().isNotEmpty).map(normalizeEmail),
       if (email != null && email.trim().isNotEmpty) normalizeEmail(email),
@@ -252,41 +337,6 @@ class UserRepository {
       );
     }
 
-    final keyMaterial =
-        'phones:${allPhones.join('|')}|emails:${allEmails.join('|')}';
-    final key = sha256
-        .convert(utf8.encode(keyMaterial))
-        .toString()
-        .substring(0, 24);
-    final friendsRef = _db
-        .collection('users')
-        .doc(ownerUid)
-        .collection('friends');
-    var friendRef = friendsRef.doc(key);
-    DocumentSnapshot<Map<String, dynamic>> existing = await friendRef.get();
-
-    if (!existing.exists) {
-      // Version 12 included the contact name and unnormalized identities in
-      // the document ID. Match those records by identity so selecting the
-      // same person after upgrading updates the existing record instead of
-      // creating a duplicate that consumes another free slot.
-      final currentFriends = await friendsRef.get();
-      QueryDocumentSnapshot<Map<String, dynamic>>? legacyMatch;
-      for (final candidate in currentFriends.docs) {
-        if (_friendMatchesIdentity(candidate.data(), allPhones, allEmails)) {
-          legacyMatch = candidate;
-          break;
-        }
-      }
-      if (legacyMatch != null) {
-        friendRef = legacyMatch.reference;
-        existing = legacyMatch;
-      } else if (maxFriends != null &&
-          currentFriends.docs.length >= maxFriends) {
-        throw const FriendLimitReachedException();
-      }
-    }
-
     final friendUid = await findUserUidByContacts(
       phones: allPhones,
       emails: allEmails,
@@ -297,24 +347,173 @@ class UserRepository {
       );
     }
 
+    final friendsRef = _db
+        .collection('users')
+        .doc(ownerUid)
+        .collection('friends');
+    final currentFriends = await friendsRef.get();
+
+    if (friendUid == null) {
+      return _savePendingFriend(
+        ownerUid: ownerUid,
+        contactName: contactName,
+        allPhones: allPhones,
+        allEmails: allEmails,
+        contactPhoto: contactPhoto,
+        maxFriends: maxFriends,
+        currentFriends: currentFriends.docs,
+      );
+    }
+
+    final canonicalId = _installedFriendDocId(friendUid);
+    final matches = currentFriends.docs.where((candidate) {
+      final candidateFriendUid = candidate.data()['friendUid'] as String?;
+      return candidate.id == canonicalId ||
+          candidateFriendUid == friendUid ||
+          _friendMatchesIdentity(candidate.data(), allPhones, allEmails);
+    }).toList();
+
+    final created = matches.isEmpty;
+    if (created &&
+        maxFriends != null &&
+        currentFriends.docs.length >= maxFriends) {
+      throw const FriendLimitReachedException();
+    }
+
+    dynamic existingCreatedAt;
+    for (final doc in matches) {
+      final value = doc.data()['createdAt'];
+      if (value != null) {
+        existingCreatedAt = value;
+        break;
+      }
+    }
+
+    final ownerData = <String, dynamic>{
+      'contactName': contactName.trim().isEmpty ? 'ללא שם' : contactName.trim(),
+      'phone': allPhones.isEmpty ? null : allPhones.first,
+      'email': allEmails.isEmpty ? null : allEmails.first,
+      'phones': allPhones,
+      'emails': allEmails,
+      if (contactPhoto != null &&
+          contactPhoto.isNotEmpty &&
+          contactPhoto.length <= maxFriendPhotoBytes)
+        'contactPhoto': Blob(Uint8List.fromList(contactPhoto)),
+      'createdAt': existingCreatedAt ?? FieldValue.serverTimestamp(),
+    };
+
+    await _upsertInstalledRelationship(
+      ownerUid: ownerUid,
+      friendUid: friendUid,
+      ownerData: ownerData,
+      legacyRefs: matches
+          .where((doc) => doc.id != canonicalId)
+          .map((doc) => doc.reference)
+          .toList(),
+    );
+    return created;
+  }
+
+  Future<bool> _savePendingFriend({
+    required String ownerUid,
+    required String contactName,
+    required List<String> allPhones,
+    required List<String> allEmails,
+    required Uint8List? contactPhoto,
+    required int? maxFriends,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> currentFriends,
+  }) async {
+    final keyMaterial =
+        'phones:${allPhones.join('|')}|emails:${allEmails.join('|')}';
+    final key = sha256
+        .convert(utf8.encode(keyMaterial))
+        .toString()
+        .substring(0, 24);
+    final canonicalRef = _friendRef(ownerUid, key);
+
+    final matches = currentFriends
+        .where(
+          (candidate) =>
+              candidate.id == key ||
+              _friendMatchesIdentity(candidate.data(), allPhones, allEmails),
+        )
+        .toList();
+    final created = matches.isEmpty;
+    if (created && maxFriends != null && currentFriends.length >= maxFriends) {
+      throw const FriendLimitReachedException();
+    }
+
+    final targetRef = matches.isEmpty ? canonicalRef : matches.first.reference;
+    final existingCreatedAt = matches.isEmpty
+        ? null
+        : matches.first.data()['createdAt'];
     final data = <String, dynamic>{
       'contactName': contactName.trim().isEmpty ? 'ללא שם' : contactName.trim(),
       'phone': allPhones.isEmpty ? null : allPhones.first,
       'email': allEmails.isEmpty ? null : allEmails.first,
       'phones': allPhones,
       'emails': allEmails,
-      'friendUid': friendUid,
-      'state': friendUid == null ? 'pending' : 'installed',
+      'friendUid': null,
+      'state': 'pending',
       'updatedAt': FieldValue.serverTimestamp(),
+      'createdAt': existingCreatedAt ?? FieldValue.serverTimestamp(),
     };
     if (contactPhoto != null &&
         contactPhoto.isNotEmpty &&
         contactPhoto.length <= maxFriendPhotoBytes) {
       data['contactPhoto'] = Blob(Uint8List.fromList(contactPhoto));
     }
-    if (!existing.exists) data['createdAt'] = FieldValue.serverTimestamp();
-    await friendRef.set(data, SetOptions(merge: true));
-    return !existing.exists;
+    await targetRef.set(data, SetOptions(merge: true));
+    return created;
+  }
+
+  Future<void> _upsertInstalledRelationship({
+    required String ownerUid,
+    required String friendUid,
+    required Map<String, dynamic> ownerData,
+    required List<DocumentReference<Map<String, dynamic>>> legacyRefs,
+  }) async {
+    final relationshipId = _friendshipId(ownerUid, friendUid);
+    final ownerRef = _friendRef(ownerUid, _installedFriendDocId(friendUid));
+    final reverseRef = _friendRef(friendUid, _installedFriendDocId(ownerUid));
+    final friendshipRef = _db.collection('friendships').doc(relationshipId);
+    final tombstoneRef = _db
+        .collection('friendship_tombstones')
+        .doc(relationshipId);
+
+    final ownerProfile = await _db.collection('profiles').doc(ownerUid).get();
+    final ownerDisplayName =
+        (ownerProfile.data()?['displayName'] as String?)?.trim();
+    final reverseName = ownerDisplayName == null || ownerDisplayName.isEmpty
+        ? 'חבר'
+        : ownerDisplayName;
+    final tombstone = await tombstoneRef.get();
+
+    final normalizedOwnerData = Map<String, dynamic>.from(ownerData)
+      ..['friendUid'] = friendUid
+      ..['state'] = 'installed'
+      ..['friendshipId'] = relationshipId
+      ..['updatedAt'] = FieldValue.serverTimestamp();
+
+    final batch = _db.batch();
+    if (tombstone.exists) batch.delete(tombstoneRef);
+    batch.set(friendshipRef, {
+      'members': _sortedMembers(ownerUid, friendUid),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    batch.set(ownerRef, normalizedOwnerData, SetOptions(merge: true));
+    batch.set(reverseRef, {
+      'contactName': reverseName,
+      'friendUid': ownerUid,
+      'state': 'installed',
+      'friendshipId': relationshipId,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    for (final legacyRef in legacyRefs) {
+      if (legacyRef.path != ownerRef.path) batch.delete(legacyRef);
+    }
+    await batch.commit();
   }
 
   bool _friendMatchesIdentity(
@@ -347,6 +546,11 @@ class UserRepository {
     return const [];
   }
 
+  Future<void> syncFriendRelationships(String ownerUid) async {
+    await resolvePendingFriends(ownerUid);
+    await _syncInstalledFriendships(ownerUid);
+  }
+
   Future<void> resolvePendingFriends(String ownerUid) async {
     final pending = await _db
         .collection('users')
@@ -372,18 +576,71 @@ class UserRepository {
         phones: phones,
         emails: emails,
       );
-      if (friendUid != null && friendUid != ownerUid) {
-        try {
-          await doc.reference.update({
-            'friendUid': friendUid,
-            'state': 'installed',
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
-        } on FirebaseException catch (error) {
-          // The owner may remove a pending friend while resolution is running.
-          if (error.code != 'not-found') rethrow;
+      if (friendUid == null || friendUid == ownerUid) continue;
+
+      try {
+        await _upsertInstalledRelationship(
+          ownerUid: ownerUid,
+          friendUid: friendUid,
+          ownerData: Map<String, dynamic>.from(data),
+          legacyRefs: [doc.reference],
+        );
+      } on FirebaseException catch (error) {
+        // The owner may remove a pending friend while resolution is running.
+        if (error.code != 'not-found') rethrow;
+      }
+    }
+  }
+
+  Future<void> _syncInstalledFriendships(String ownerUid) async {
+    final snapshot = await _db
+        .collection('users')
+        .doc(ownerUid)
+        .collection('friends')
+        .where('state', isEqualTo: 'installed')
+        .get();
+
+    final grouped = <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+    for (final doc in snapshot.docs) {
+      final friendUid = doc.data()['friendUid'] as String?;
+      if (friendUid == null || friendUid.isEmpty || friendUid == ownerUid) {
+        continue;
+      }
+      grouped.putIfAbsent(friendUid, () => []).add(doc);
+    }
+
+    for (final entry in grouped.entries) {
+      final friendUid = entry.key;
+      final docs = entry.value;
+      final tombstone = await _tombstoneRef(ownerUid, friendUid).get();
+      if (tombstone.exists) {
+        final batch = _db.batch();
+        for (final doc in docs) {
+          batch.delete(doc.reference);
+        }
+        await batch.commit();
+        continue;
+      }
+
+      final canonicalId = _installedFriendDocId(friendUid);
+      QueryDocumentSnapshot<Map<String, dynamic>>? canonical;
+      for (final doc in docs) {
+        if (doc.id == canonicalId) {
+          canonical = doc;
+          break;
         }
       }
+      final source = canonical ?? docs.first;
+      final ownerData = Map<String, dynamic>.from(source.data());
+      await _upsertInstalledRelationship(
+        ownerUid: ownerUid,
+        friendUid: friendUid,
+        ownerData: ownerData,
+        legacyRefs: docs
+            .where((doc) => doc.id != canonicalId)
+            .map((doc) => doc.reference)
+            .toList(),
+      );
     }
   }
 
