@@ -232,6 +232,7 @@ class _HomeScreenState extends State<HomeScreen> {
               StatusTimerService.instance.syncAndSchedule(uid, profile),
             );
           });
+          final colors = Theme.of(context).colorScheme;
           return RefreshIndicator(
             onRefresh: () =>
                 UserRepository.instance.syncFriendRelationships(uid),
@@ -315,18 +316,33 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(height: 22),
                 // MATZAV_V25_FRIENDS_THEME
                 ListTileTheme(
-                  data: const ListTileThemeData(
+                  data: ListTileThemeData(
                     dense: true,
-                    visualDensity: VisualDensity(horizontal: -2, vertical: -2),
-                    contentPadding: EdgeInsetsDirectional.fromSTEB(8, 0, 4, 0),
+                    visualDensity: const VisualDensity(
+                      horizontal: -2,
+                      vertical: -2,
+                    ),
+                    contentPadding: const EdgeInsetsDirectional.fromSTEB(
+                      8,
+                      0,
+                      4,
+                      0,
+                    ),
                     minLeadingWidth: 36,
                     horizontalTitleGap: 8,
                     minVerticalPadding: 2,
+                    textColor: colors.onSurface,
+                    iconColor: colors.onSurfaceVariant,
                     titleTextStyle: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
+                      color: colors.onSurface,
                     ),
-                    subtitleTextStyle: TextStyle(fontSize: 11.5, height: 1.15),
+                    subtitleTextStyle: TextStyle(
+                      fontSize: 11.5,
+                      height: 1.15,
+                      color: colors.onSurfaceVariant,
+                    ),
                   ),
                   child: _FriendsSection(uid: uid),
                 ),
@@ -574,18 +590,11 @@ class _StatusTimerDialog extends StatefulWidget {
 }
 
 class _StatusTimerDialogState extends State<_StatusTimerDialog> {
-  final _hoursController = TextEditingController(text: '1');
-  final _minutesController = TextEditingController(text: '0');
+  int _hours = 1;
+  int _minutes = 0;
   bool _useEndTime = false;
   DateTime? _selectedEnd;
   String? _error;
-
-  @override
-  void dispose() {
-    _hoursController.dispose();
-    _minutesController.dispose();
-    super.dispose();
-  }
 
   Future<void> _pickEndTime() async {
     final now = DateTime.now();
@@ -627,13 +636,7 @@ class _StatusTimerDialogState extends State<_StatusTimerDialog> {
         return;
       }
     } else {
-      final hours = int.tryParse(_hoursController.text.trim()) ?? -1;
-      final minutes = int.tryParse(_minutesController.text.trim()) ?? -1;
-      if (hours < 0 || minutes < 0 || minutes > 59) {
-        setState(() => _error = 'הזן שעות ודקות תקינות.');
-        return;
-      }
-      final totalMinutes = hours * 60 + minutes;
+      final totalMinutes = _hours * 60 + _minutes;
       if (totalMinutes < 1 || totalMinutes > 24 * 60) {
         setState(() => _error = 'הטיימר חייב להיות בין דקה אחת ל־24 שעות.');
         return;
@@ -693,24 +696,53 @@ class _StatusTimerDialogState extends State<_StatusTimerDialog> {
               Row(
                 children: [
                   Expanded(
-                    child: TextField(
-                      controller: _hoursController,
-                      keyboardType: TextInputType.number,
+                    child: DropdownButtonFormField<int>(
+                      initialValue: _hours,
                       decoration: const InputDecoration(
                         labelText: 'שעות',
                         border: OutlineInputBorder(),
                       ),
+                      items: List.generate(
+                        25,
+                        (hour) => DropdownMenuItem<int>(
+                          value: hour,
+                          child: Text('$hour'),
+                        ),
+                      ),
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setState(() {
+                          _hours = value;
+                          if (_hours == 24) _minutes = 0;
+                          _error = null;
+                        });
+                      },
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: TextField(
-                      controller: _minutesController,
-                      keyboardType: TextInputType.number,
+                    child: DropdownButtonFormField<int>(
+                      initialValue: _minutes,
                       decoration: const InputDecoration(
                         labelText: 'דקות',
                         border: OutlineInputBorder(),
                       ),
+                      items: List.generate(
+                        60,
+                        (minute) => DropdownMenuItem<int>(
+                          value: minute,
+                          child: Text(minute.toString().padLeft(2, '0')),
+                        ),
+                      ),
+                      onChanged: _hours == 24
+                          ? null
+                          : (value) {
+                              if (value == null) return;
+                              setState(() {
+                                _minutes = value;
+                                _error = null;
+                              });
+                            },
                     ),
                   ),
                 ],
