@@ -3,7 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/status_models.dart';
 import '../services/ads_service.dart';
+import '../services/automatic_status_service.dart';
+import '../services/location_status_service.dart';
 import '../services/premium_service.dart';
 import '../services/user_repository.dart';
 import 'premium_screen.dart';
@@ -45,8 +48,12 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  static const _automationPreferenceKey = 'matzav_automation_enabled_v25';
+
   bool _busy = false;
   bool _loadingZones = true;
+  bool _automationOn = true;
+  bool _automationBusy = false;
   Map<String, dynamic> _zones = const {};
 
   String get uid => FirebaseAuth.instance.currentUser!.uid;
@@ -58,12 +65,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _loadSettingsState() async {
+    final prefs = await SharedPreferences.getInstance();
     final zones = await UserRepository.instance.getZones(uid);
     if (!mounted) return;
     setState(() {
+      _automationOn = prefs.getBool(_automationPreferenceKey) ?? true;
       _zones = zones;
       _loadingZones = false;
     });
+  }
+
+  Future<void> _setAutomation(bool value) async {
+    if (_automationBusy) return;
+    setState(() => _automationBusy = true);
+
+    try {
+      final snapshot = await UserRepository.instance.profileStream(uid).first;
+      final currentActivity = activityFromString(
+        snapshot.data()?['activity'] as String?,
+      );
+
+      if (value) {
+        await LocationStatusService.instance.start(
+          uid: uid,
+          currentActivity: currentActivity,
+        );
+        await AutomaticStatusService.instance.start(uid: uid);
+      } else {
+        await AutomaticStatusService.instance.stop();
+        await LocationStatusService.instance.disable();
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_automationPreferenceKey, value);
+
+      if (!mounted) return;
+      setState(() => _automationOn = value);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            value
+                ? 'הזיהוי האוטומטי הופעל.'
+                : 'הזיהוי האוטומטי כובה.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('לא ניתן לשנות את הזיהוי האוטומטי: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _automationBusy = false);
+    }
   }
 
   Future<void> _saveCurrentLocation(String zone, String label) async {
@@ -247,6 +301,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
+          Card(
+            child: SwitchListTile.adaptive(
+              value: _automationOn,
+              onChanged: _automationBusy ? null : _setAutomation,
+              secondary: const Icon(Icons.auto_awesome_motion_outlined),
+              title: const Text('הפעל זיהוי אוטומטי'),
+              subtitle: const Text(
+                'נסיעה לפי GPS + שיחה + שינה + אזורי בית/עבודה/כלב • פועל גם ברקע',
+              ),
+            ),
+          ),
           const Card(
             child: ListTile(
               leading: Icon(Icons.phone_in_talk_outlined),
@@ -336,7 +401,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Padding(
               padding: EdgeInsets.all(16),
               child: Text(
-                'כאשר "זיהוי אוטומטי" מופעל במסך הראשי, Matzav מפעילה '
+                'כאשר "זיהוי אוטומטי" מופעל כאן בהגדרות, Matzav מפעילה '
                 'זיהוי נסיעה ברקע וגם את זיהוי השינה. זיהוי שיחה פועל ללא '
                 'הרשאת טלפון נוספת.',
               ),
