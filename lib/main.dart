@@ -9,6 +9,7 @@ import 'firebase_options.dart';
 import 'screens/auth_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/settings_screen.dart';
+import 'services/app_update_service.dart';
 import 'services/premium_service.dart';
 import 'services/user_repository.dart';
 
@@ -79,7 +80,7 @@ class MatzavApp extends StatelessWidget {
           theme: _buildTheme(Brightness.light),
           darkTheme: _buildTheme(Brightness.dark),
           themeMode: ThemeService.instance.themeMode,
-          home: const AuthGate(),
+          home: const AppUpdateGate(child: AuthGate()),
         );
       },
     );
