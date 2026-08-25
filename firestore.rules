@@ -196,5 +196,11 @@ service cloud.firestore {
         allow delete: if isSelf(uid) || validCrossFriendBefore(uid);
       }
     }
+
+    // Version 22: one-shot "wait until this friend's call ends" requests.
+    match /call_waits/{targetUid}/waiters/{requesterUid} {
+      allow create, read, update, delete:
+        if request.auth != null && request.auth.uid == requesterUid;
+    }
   }
 }

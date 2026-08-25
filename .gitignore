@@ -44,3 +44,4 @@ ios/Flutter/ephemeral/
 # OS
 .DS_Store
 Thumbs.db
+backup_v25*/

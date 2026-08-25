@@ -1,8 +1,7 @@
 name: matzav_app
 description: Friends activity and availability status app.
 publish_to: 'none'
-version: 0.1.0+18
-
+version: 0.1.0+25
 environment:
   sdk: '>=3.10.0 <4.0.0'
 
@@ -11,9 +10,9 @@ dependencies:
     sdk: flutter
   flutter_localizations:
     sdk: flutter
-  firebase_core: ^4.13.0
-  firebase_auth: ^6.5.7
-  cloud_firestore: ^6.8.0
+  firebase_core: 4.13.0
+  firebase_auth: 6.5.7
+  cloud_firestore: 6.8.0
   google_sign_in: 6.3.0
   sign_in_with_apple: ^8.1.0
   flutter_contacts: 2.1.0
@@ -25,6 +24,7 @@ dependencies:
   google_mobile_ads: 9.1.0
   in_app_purchase: 3.3.0
   shared_preferences: 2.5.5
+  firebase_messaging: 16.5.0
 
 flutter:
   uses-material-design: true

@@ -1,21 +1,36 @@
-enum ActivityStatus { home, work, meeting, driving, dogWalk }
+enum ActivityStatus {
+  home,
+  away,
+  work,
+  meeting,
+  driving,
+  onCall,
+  sleeping,
+  dogWalk,
+}
 
 enum AvailabilityStatus { freeToTalk, canTalk, doNotDisturb }
 
 extension ActivityStatusUi on ActivityStatus {
   String get label => switch (this) {
         ActivityStatus.home => 'בבית',
+        ActivityStatus.away => 'לא בבית',
         ActivityStatus.work => 'בעבודה',
         ActivityStatus.meeting => 'בפגישה',
         ActivityStatus.driving => 'בנסיעה',
+        ActivityStatus.onCall => 'בשיחה',
+        ActivityStatus.sleeping => 'ישן',
         ActivityStatus.dogWalk => 'טיול עם הכלב',
       };
 
   String get emoji => switch (this) {
         ActivityStatus.home => '🏠',
+        ActivityStatus.away => '🚶',
         ActivityStatus.work => '💼',
         ActivityStatus.meeting => '📅',
         ActivityStatus.driving => '🚗',
+        ActivityStatus.onCall => '📞',
+        ActivityStatus.sleeping => '😴',
         ActivityStatus.dogWalk => '🐕',
       };
 }

@@ -1,13 +1,20 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/status_models.dart';
+import 'automatic_status_service.dart';
+import 'status_timer_service.dart';
 import 'user_repository.dart';
 
 class LocationStatusService {
   LocationStatusService._();
   static final instance = LocationStatusService._();
+
+  static const _automationPreferenceKey =
+      'automatic_location_status_enabled_v1';
 
   StreamSubscription<Position>? _subscription;
   String? _uid;
@@ -18,23 +25,37 @@ class LocationStatusService {
 
   bool get running => _subscription != null;
 
+  Future<bool> isAutomationEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_automationPreferenceKey) ?? false;
+  }
+
+  Future<void> _rememberAutomation(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_automationPreferenceKey, enabled);
+  }
+
+  void noteManualActivity(ActivityStatus activity) {
+    if (activity != ActivityStatus.driving) {
+      _lastNonDriving = activity;
+    }
+  }
+
   Future<void> start({
     required String uid,
     required ActivityStatus currentActivity,
+    bool remember = true,
   }) async {
-    if (_subscription != null) return;
-    _uid = uid;
+    if (_subscription != null) {
+      if (remember) await _rememberAutomation(true);
+      return;
+    }
 
-    // Keep the in-memory state aligned with Firestore after an app restart.
-    // Without this, a user who was previously stored as "driving" could
-    // remain stuck in that state forever because the stop-driving branch
-    // only runs while _driving is true.
+    _uid = uid;
     _driving = currentActivity == ActivityStatus.driving;
     if (currentActivity != ActivityStatus.driving) {
       _lastNonDriving = currentActivity;
     }
-    _fastSamples = 0;
-    _slowSamples = 0;
 
     final enabled = await Geolocator.isLocationServiceEnabled();
     if (!enabled) throw Exception('שירותי המיקום כבויים');
@@ -48,34 +69,73 @@ class LocationStatusService {
       throw Exception('אין הרשאת מיקום');
     }
 
-    const settings = LocationSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 20,
-    );
+    final LocationSettings settings;
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      settings = AndroidSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 5,
+        intervalDuration: const Duration(seconds: 5),
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationTitle: 'Matzav – זיהוי נסיעה פעיל',
+          notificationText:
+              'Matzav בודקת מהירות כדי לעדכן אוטומטית את הסטטוס גם ברקע.',
+          notificationChannelName: 'זיהוי נסיעה אוטומטי',
+          setOngoing: true,
+          enableWakeLock: false,
+          enableWifiLock: false,
+        ),
+      );
+    } else {
+      settings = const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 10,
+      );
+    }
 
-    _subscription = Geolocator.getPositionStream(
-      locationSettings: settings,
-    ).listen(_handlePosition);
+    _fastSamples = 0;
+    _slowSamples = 0;
+    _subscription = Geolocator.getPositionStream(locationSettings: settings)
+        .listen(
+          _handlePosition,
+          onError: (_) {
+            _subscription?.cancel();
+            _subscription = null;
+          },
+        );
+
+    if (remember) await _rememberAutomation(true);
   }
 
-  Future<void> stop() async {
+  Future<void> stop({bool rememberOff = false}) async {
     await _subscription?.cancel();
     _subscription = null;
     _uid = null;
     _fastSamples = 0;
     _slowSamples = 0;
     _driving = false;
+    if (rememberOff) await _rememberAutomation(false);
   }
+
+  Future<void> disable() => stop(rememberOff: true);
 
   Future<void> _handlePosition(Position position) async {
     final uid = _uid;
     if (uid == null) return;
 
-    // Position.speed is meters/second. 5.5 m/s is about 20 km/h.
-    if (position.speed >= 5.5) {
+    // Phone-call and sleep overrides take priority over location automation.
+    if (AutomaticStatusService.instance.overrideActive) return;
+
+    // Position.speed is meters/second.
+    // >= 8.3 m/s is ~30 km/h: a single reading is enough to react quickly.
+    // >= 5.5 m/s is ~20 km/h: require two consecutive readings.
+    final speed = position.speed;
+    if (speed >= 8.3) {
+      _fastSamples = 2;
+      _slowSamples = 0;
+    } else if (speed >= 5.5) {
       _fastSamples++;
       _slowSamples = 0;
-    } else if (position.speed >= 0 && position.speed <= 2.0) {
+    } else if (speed >= 0 && speed <= 2.0) {
       _slowSamples++;
       _fastSamples = 0;
     } else {
@@ -92,10 +152,22 @@ class LocationStatusService {
       return;
     }
 
+    // With a 5-second Android interval, three slow samples means roughly
+    // 15 seconds stopped before leaving driving mode.
     if (_driving && _slowSamples >= 3) {
       _driving = false;
-      final zoneActivity = await _activityForZone(uid, position);
-      final nextActivity = zoneActivity ?? _lastNonDriving;
+      final fallback = await StatusTimerService.instance.resolveActivityReturn(
+        uid,
+        _lastNonDriving,
+      );
+      final meetingTimerActive = await StatusTimerService.instance
+          .isMeetingTimerActive();
+      final zoneActivity = meetingTimerActive
+          ? null
+          : await _activityForZone(uid, position);
+      final nextActivity = meetingTimerActive
+          ? ActivityStatus.meeting
+          : (zoneActivity ?? fallback);
       _lastNonDriving = nextActivity;
       await UserRepository.instance.updateStatus(
         uid: uid,
@@ -104,7 +176,19 @@ class LocationStatusService {
       return;
     }
 
-    if (!_driving && position.speed >= 0 && position.speed <= 2.0) {
+    if (!_driving && speed >= 0 && speed <= 2.0) {
+      // A manually selected meeting with a timer temporarily takes priority
+      // over home/work/dog-walk geofences. "לא בבית" remains manual-only.
+      if (await StatusTimerService.instance.isMeetingTimerActive()) return;
+
+      final fallback = await StatusTimerService.instance.resolveActivityReturn(
+        uid,
+        _lastNonDriving,
+      );
+      if (fallback != _lastNonDriving) {
+        _lastNonDriving = fallback;
+      }
+
       final zoneActivity = await _activityForZone(uid, position);
       if (zoneActivity != null && zoneActivity != _lastNonDriving) {
         _lastNonDriving = zoneActivity;
@@ -120,6 +204,10 @@ class LocationStatusService {
     String uid,
     Position position,
   ) async {
+    return (await _zoneResult(uid, position)).activity;
+  }
+
+  Future<_ZoneResult> _zoneResult(String uid, Position position) async {
     final zones = await UserRepository.instance.getZones(uid);
     for (final entry in zones.entries) {
       if (entry.value is! Map) continue;
@@ -128,6 +216,7 @@ class LocationStatusService {
       final lng = (map['lng'] as num?)?.toDouble();
       final radius = (map['radius'] as num?)?.toDouble() ?? 150;
       if (lat == null || lng == null) continue;
+
       final distance = Geolocator.distanceBetween(
         position.latitude,
         position.longitude,
@@ -137,14 +226,21 @@ class LocationStatusService {
       if (distance <= radius) {
         switch (entry.key) {
           case 'home':
-            return ActivityStatus.home;
+            return const _ZoneResult(activity: ActivityStatus.home);
           case 'work':
-            return ActivityStatus.work;
+            return const _ZoneResult(activity: ActivityStatus.work);
           case 'dogWalk':
-            return ActivityStatus.dogWalk;
+            return const _ZoneResult(activity: ActivityStatus.dogWalk);
         }
       }
     }
-    return null;
+
+    return const _ZoneResult(activity: null);
   }
+}
+
+class _ZoneResult {
+  const _ZoneResult({required this.activity});
+
+  final ActivityStatus? activity;
 }

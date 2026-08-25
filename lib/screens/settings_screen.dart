@@ -16,6 +16,25 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _busy = false;
+  bool _loadingZones = true;
+  Map<String, dynamic> _zones = const {};
+
+  String get uid => FirebaseAuth.instance.currentUser!.uid;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettingsState();
+  }
+
+  Future<void> _loadSettingsState() async {
+    final zones = await UserRepository.instance.getZones(uid);
+    if (!mounted) return;
+    setState(() {
+      _zones = zones;
+      _loadingZones = false;
+    });
+  }
 
   Future<void> _saveCurrentLocation(String zone, String label) async {
     setState(() => _busy = true);
@@ -34,12 +53,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       );
       await UserRepository.instance.saveZone(
-        uid: FirebaseAuth.instance.currentUser!.uid,
+        uid: uid,
         name: zone,
         latitude: position.latitude,
         longitude: position.longitude,
       );
+      final zones = await UserRepository.instance.getZones(uid);
       if (!mounted) return;
+      setState(() => _zones = zones);
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('$label נשמר ברדיוס 150 מטר')));
@@ -51,6 +72,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+
+  String _zoneSubtitle(String zone) {
+    final raw = _zones[zone];
+    if (raw is! Map) return 'לא הוגדר';
+    final map = Map<String, dynamic>.from(raw);
+    final lat = (map['lat'] as num?)?.toDouble();
+    final lng = (map['lng'] as num?)?.toDouble();
+    final radius = (map['radius'] as num?)?.toDouble() ?? 150;
+    if (lat == null || lng == null) return 'לא הוגדר';
+    return 'הוגדר • ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)} • '
+        'רדיוס ${radius.round()} מ׳';
+  }
+
+  bool _zoneConfigured(String zone) {
+    final raw = _zones[zone];
+    if (raw is! Map) return false;
+    final map = Map<String, dynamic>.from(raw);
+    return map['lat'] is num && map['lng'] is num;
   }
 
   Future<void> _showPrivacyOptions() async {
@@ -92,9 +133,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 trailing: const Icon(Icons.chevron_left),
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(
-                    builder: (_) => PremiumScreen(
-                      uid: FirebaseAuth.instance.currentUser!.uid,
-                    ),
+                    builder: (_) => PremiumScreen(uid: uid),
                   ),
                 ),
               ),
@@ -117,6 +156,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 16),
           Text(
+            'זיהוי אוטומטי',
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.phone_in_talk_outlined),
+              title: Text('זיהוי שיחה'),
+              subtitle: Text(
+                'פעיל יחד עם "זיהוי אוטומטי". מזהה מצב שמע של שיחת '
+                'טלפון או שיחת VoIP ומציג "בשיחה", בלי לקרוא מספר, '
+                'יומן שיחות או תוכן שיחה.',
+              ),
+              trailing: Icon(Icons.check_circle_outline),
+            ),
+          ),
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.bedtime_outlined),
+              title: Text('מצב שינה'),
+              subtitle: Text(
+                'מהשעה 22:00: אם הטלפון נשאר נעול/כבוי יותר מ־10 דקות, '
+                'המצב משתנה ל־"ישן". הוא חוזר למצב הקודם בפתיחה הראשונה '
+                'של הטלפון.',
+              ),
+            ),
+          ),
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.directions_walk_outlined),
+              title: Text('לא בבית'),
+              subtitle: Text(
+                'נוסף כמצב ידני, ובזיהוי אוטומטי הוא משמש כאשר אינך '
+                'באף אחד מהאזורים שהוגדרו.',
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
             'אוטומציה לפי מיקום',
             style: Theme.of(
               context,
@@ -124,26 +204,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 8),
           const Text(
-            'עמוד על המקום הרצוי ולחץ שמירה. האפליקציה תזהה כניסה לאזור ותעדכן מצב.',
+            'עמוד על המקום הרצוי ולחץ שמירה. כאן ניתן גם לראות אם כבר '
+            'הוגדר מיקום ואת הקואורדינטות שנשמרו.',
           ),
           const SizedBox(height: 16),
-          _ZoneTile(
-            icon: Icons.home_outlined,
-            title: 'הבית שלי',
-            onTap: _busy ? null : () => _saveCurrentLocation('home', 'הבית'),
-          ),
-          _ZoneTile(
-            icon: Icons.work_outline,
-            title: 'העבודה שלי',
-            onTap: _busy ? null : () => _saveCurrentLocation('work', 'העבודה'),
-          ),
-          _ZoneTile(
-            icon: Icons.pets_outlined,
-            title: 'אזור טיול עם הכלב',
-            onTap: _busy
-                ? null
-                : () => _saveCurrentLocation('dogWalk', 'אזור הטיול עם הכלב'),
-          ),
+          if (_loadingZones)
+            const Center(child: CircularProgressIndicator())
+          else ...[
+            _ZoneTile(
+              icon: Icons.home_outlined,
+              title: 'הבית שלי',
+              subtitle: _zoneSubtitle('home'),
+              configured: _zoneConfigured('home'),
+              onTap: _busy
+                  ? null
+                  : () => _saveCurrentLocation('home', 'הבית'),
+            ),
+            _ZoneTile(
+              icon: Icons.work_outline,
+              title: 'העבודה שלי',
+              subtitle: _zoneSubtitle('work'),
+              configured: _zoneConfigured('work'),
+              onTap: _busy
+                  ? null
+                  : () => _saveCurrentLocation('work', 'העבודה'),
+            ),
+            _ZoneTile(
+              icon: Icons.pets_outlined,
+              title: 'אזור טיול עם הכלב',
+              subtitle: _zoneSubtitle('dogWalk'),
+              configured: _zoneConfigured('dogWalk'),
+              onTap: _busy
+                  ? null
+                  : () => _saveCurrentLocation(
+                        'dogWalk',
+                        'אזור הטיול עם הכלב',
+                      ),
+            ),
+          ],
           if (_busy) ...[
             const SizedBox(height: 20),
             const Center(child: CircularProgressIndicator()),
@@ -153,7 +251,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Padding(
               padding: EdgeInsets.all(16),
               child: Text(
-                'זיהוי נסיעה בגרסה הזו משתמש במהירות GPS. חיבור Bluetooth לרכב הוא השדרוג הבא, כדי להפחית שימוש ב-GPS ולזהות נסיעה מהר יותר.',
+                'כאשר "זיהוי אוטומטי" מופעל במסך הראשי, Matzav מפעילה '
+                'זיהוי נסיעה ברקע וגם את זיהוי השינה. זיהוי שיחה פועל ללא '
+                'הרשאת טלפון נוספת.',
               ),
             ),
           ),
@@ -167,22 +267,30 @@ class _ZoneTile extends StatelessWidget {
   const _ZoneTile({
     required this.icon,
     required this.title,
+    required this.subtitle,
+    required this.configured,
     required this.onTap,
   });
 
   final IconData icon;
   final String title;
+  final String subtitle;
+  final bool configured;
   final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     return Card(
       child: ListTile(
-        leading: Icon(icon),
+        leading: Icon(
+          icon,
+          color: configured ? Theme.of(context).colorScheme.primary : null,
+        ),
         title: Text(title),
+        subtitle: Text(subtitle),
         trailing: FilledButton.tonal(
           onPressed: onTap,
-          child: const Text('שמור מיקום נוכחי'),
+          child: Text(configured ? 'עדכן' : 'שמור מיקום'),
         ),
       ),
     );

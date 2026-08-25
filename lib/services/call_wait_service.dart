@@ -1,0 +1,144 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+
+class CallWaitService {
+  CallWaitService._();
+  static final instance = CallWaitService._();
+
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  final StreamController<String> _foregroundMessages =
+      StreamController<String>.broadcast();
+
+  StreamSubscription<String>? _tokenSubscription;
+  StreamSubscription<RemoteMessage>? _messageSubscription;
+  String? _uid;
+
+  Stream<String> get foregroundMessages => _foregroundMessages.stream;
+
+  /// Initializes FCM listeners without forcing a notification permission
+  /// prompt. Permission is requested only when the user explicitly chooses
+  /// "wait for call to end" for the first time.
+  Future<void> initializeForUser(String uid) async {
+    _uid = uid;
+    final messaging = FirebaseMessaging.instance;
+
+    final currentSettings = await messaging.getNotificationSettings();
+    if (_canNotify(currentSettings.authorizationStatus)) {
+      final token = await messaging.getToken();
+      if (token != null && token.isNotEmpty) {
+        await _saveToken(uid, token);
+      }
+    }
+
+    await _tokenSubscription?.cancel();
+    _tokenSubscription = messaging.onTokenRefresh.listen((newToken) {
+      unawaited(_saveToken(uid, newToken));
+    });
+
+    await _messageSubscription?.cancel();
+    _messageSubscription = FirebaseMessaging.onMessage.listen((message) {
+      final body = message.notification?.body;
+      if (body != null && body.trim().isNotEmpty) {
+        _foregroundMessages.add(body.trim());
+      }
+    });
+  }
+
+  bool _canNotify(AuthorizationStatus status) {
+    return status == AuthorizationStatus.authorized ||
+        status == AuthorizationStatus.provisional;
+  }
+
+  Future<void> _ensureNotificationPermission(String uid) async {
+    final messaging = FirebaseMessaging.instance;
+    var settings = await messaging.getNotificationSettings();
+    if (!_canNotify(settings.authorizationStatus)) {
+      settings = await messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+    }
+    if (!_canNotify(settings.authorizationStatus)) {
+      throw StateError('כדי לקבל התראה צריך לאשר ל־Matzav לשלוח התראות.');
+    }
+
+    final token = await messaging.getToken();
+    if (token == null || token.isEmpty) {
+      throw StateError('לא ניתן כרגע ליצור מזהה להתראות. נסה שוב בעוד רגע.');
+    }
+    await _saveToken(uid, token);
+  }
+
+  Future<void> _saveToken(String uid, String token) async {
+    if (_uid != uid) return;
+    await _db.collection('private_users').doc(uid).set({
+      'fcmToken': token,
+      'fcmTokenUpdatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<bool> waitForCallEnd({
+    required String requesterUid,
+    required String targetUid,
+    required String targetName,
+  }) async {
+    await _ensureNotificationPermission(requesterUid);
+
+    final targetRef = _db.collection('profiles').doc(targetUid);
+    final waitRef = _db
+        .collection('call_waits')
+        .doc(targetUid)
+        .collection('waiters')
+        .doc(requesterUid);
+
+    return _db.runTransaction<bool>((transaction) async {
+      final target = await transaction.get(targetRef);
+      final activity = target.data()?['activity']?.toString();
+      if (activity != 'onCall') return false;
+
+      transaction.set(waitRef, {
+        'requesterUid': requesterUid,
+        'targetUid': targetUid,
+        'targetName': targetName,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      return true;
+    });
+  }
+
+  Future<void> cancelWait({
+    required String requesterUid,
+    required String targetUid,
+  }) {
+    return _db
+        .collection('call_waits')
+        .doc(targetUid)
+        .collection('waiters')
+        .doc(requesterUid)
+        .delete();
+  }
+
+  Stream<bool> waitingStream({
+    required String requesterUid,
+    required String targetUid,
+  }) {
+    return _db
+        .collection('call_waits')
+        .doc(targetUid)
+        .collection('waiters')
+        .doc(requesterUid)
+        .snapshots()
+        .map((snapshot) => snapshot.exists);
+  }
+
+  Future<void> dispose() async {
+    await _tokenSubscription?.cancel();
+    await _messageSubscription?.cancel();
+    _tokenSubscription = null;
+    _messageSubscription = null;
+    _uid = null;
+  }
+}
