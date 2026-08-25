@@ -1,11 +1,41 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/ads_service.dart';
 import '../services/premium_service.dart';
 import '../services/user_repository.dart';
 import 'premium_screen.dart';
+
+class ThemeService extends ChangeNotifier {
+  ThemeService._();
+  static final instance = ThemeService._();
+
+  static const _darkModeKey = 'matzav_dark_mode';
+
+  bool _isDarkMode = false;
+  bool _initialized = false;
+
+  bool get isDarkMode => _isDarkMode;
+  ThemeMode get themeMode => _isDarkMode ? ThemeMode.dark : ThemeMode.light;
+
+  Future<void> initialize() async {
+    if (_initialized) return;
+    final prefs = await SharedPreferences.getInstance();
+    _isDarkMode = prefs.getBool(_darkModeKey) ?? false;
+    _initialized = true;
+  }
+
+  Future<void> setDarkMode(bool value) async {
+    if (_isDarkMode == value && _initialized) return;
+    _isDarkMode = value;
+    _initialized = true;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_darkModeKey, value);
+  }
+}
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -74,7 +104,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-
   String _zoneSubtitle(String zone) {
     final raw = _zones[zone];
     if (raw is! Map) return 'לא הוגדר';
@@ -111,6 +140,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          Text(
+            'מראה',
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          AnimatedBuilder(
+            animation: ThemeService.instance,
+            builder: (context, _) {
+              final isDark = ThemeService.instance.isDarkMode;
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(
+                          isDark
+                              ? Icons.dark_mode_outlined
+                              : Icons.light_mode_outlined,
+                        ),
+                        title: const Text('ערכת נושא'),
+                        subtitle: Text(
+                          isDark
+                              ? 'מצב כהה — רקע כהה וטקסט בהיר'
+                              : 'מצב בהיר — רקע בהיר וטקסט כהה',
+                        ),
+                      ),
+                      SegmentedButton<bool>(
+                        segments: const [
+                          ButtonSegment<bool>(
+                            value: false,
+                            icon: Icon(Icons.light_mode_outlined),
+                            label: Text('בהיר'),
+                          ),
+                          ButtonSegment<bool>(
+                            value: true,
+                            icon: Icon(Icons.dark_mode_outlined),
+                            label: Text('כהה'),
+                          ),
+                        ],
+                        selected: {isDark},
+                        onSelectionChanged: (selection) {
+                          ThemeService.instance.setDarkMode(selection.first);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 16),
           AnimatedBuilder(
             animation: PremiumService.instance,
             builder: (context, _) => Card(
