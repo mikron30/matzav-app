@@ -48,6 +48,9 @@
         <receiver
             android:name=".SleepCheckReceiver"
             android:exported="false" />
+        <receiver
+            android:name=".NativeSleepCheckReceiver"
+            android:exported="false" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
