@@ -25,7 +25,7 @@ dependencies:
   in_app_purchase: 3.3.0
   shared_preferences: 2.5.5
   firebase_messaging: 16.5.0
-  package_info_plus: 8.3.1
+  package_info_plus: ^10.2.1
   in_app_update: 4.2.5
   url_launcher: 6.3.2
 
