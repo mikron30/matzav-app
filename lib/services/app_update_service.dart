@@ -1,6 +1,5 @@
-import 'dart:io';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:in_app_update/in_app_update.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -33,43 +32,52 @@ class AppUpdateService {
   static const _defaultAndroidUrl =
       'https://play.google.com/store/apps/details?id=com.mikron30.matzav';
 
+  bool get _isAndroid =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+  bool get _isIos => !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
   Future<AppUpdateDecision> checkForUpdate() async {
     final packageInfo = await PackageInfo.fromPlatform();
     final currentBuild = int.tryParse(packageInfo.buildNumber) ?? 0;
 
     int latestBuild = currentBuild;
     int minimumBuild = 0;
-    String storeUrl = _defaultAndroidUrl;
+    String storeUrl = _isAndroid ? _defaultAndroidUrl : '';
     String? message;
 
     try {
       final snapshot = await FirebaseFirestore.instance
           .collection('app_config')
           .doc('version')
-          .get();
+          .get()
+          .timeout(const Duration(seconds: 4));
       final data = snapshot.data();
       if (data != null) {
         latestBuild = (data['latestBuild'] as num?)?.toInt() ?? currentBuild;
         minimumBuild = (data['minimumBuild'] as num?)?.toInt() ?? 0;
         message = data['message'] as String?;
 
-        if (Platform.isAndroid) {
+        if (_isAndroid) {
           storeUrl = (data['androidUrl'] as String?)?.trim().isNotEmpty == true
               ? (data['androidUrl'] as String).trim()
               : _defaultAndroidUrl;
+        } else if (_isIos) {
+          storeUrl = (data['iosUrl'] as String?)?.trim() ?? '';
         }
       }
     } catch (_) {
-      // Firestore configuration is optional. Google Play can still report
-      // whether an update is available on Android.
+      // Firestore configuration is optional. On Android, Google Play can still
+      // report whether a newer release is available.
     }
 
     AppUpdateInfo? playInfo;
     bool playSaysUpdateAvailable = false;
 
-    if (Platform.isAndroid) {
+    if (_isAndroid) {
       try {
-        playInfo = await InAppUpdate.checkForUpdate();
+        playInfo = await InAppUpdate.checkForUpdate().timeout(
+          const Duration(seconds: 4),
+        );
         playSaysUpdateAvailable =
             playInfo.updateAvailability == UpdateAvailability.updateAvailable;
         final availableVersion = playInfo.availableVersionCode;
@@ -77,14 +85,16 @@ class AppUpdateService {
           latestBuild = availableVersion;
         }
       } catch (_) {
-        // This can fail for debug/sideloaded builds. The Firestore check above
-        // remains enough for release builds when app_config/version exists.
+        // Expected for debug/sideloaded builds or when Google Play is
+        // temporarily unavailable. Firestore remains the fallback.
       }
     }
 
-    final updateAvailable =
-        currentBuild < latestBuild || playSaysUpdateAvailable;
+    if (minimumBuild > latestBuild) latestBuild = minimumBuild;
+
     final forceUpdate = currentBuild < minimumBuild;
+    final updateAvailable =
+        forceUpdate || currentBuild < latestBuild || playSaysUpdateAvailable;
 
     return AppUpdateDecision(
       updateAvailable: updateAvailable,
@@ -98,7 +108,7 @@ class AppUpdateService {
   }
 
   Future<void> startUpdate(AppUpdateDecision decision) async {
-    if (Platform.isAndroid) {
+    if (_isAndroid) {
       final info = decision.playUpdateInfo;
       if (info != null &&
           info.updateAvailability == UpdateAvailability.updateAvailable &&
@@ -112,6 +122,7 @@ class AppUpdateService {
       }
     }
 
+    if (decision.storeUrl.trim().isEmpty) return;
     final uri = Uri.tryParse(decision.storeUrl);
     if (uri == null) return;
     await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -154,6 +165,7 @@ class _AppUpdateGateState extends State<AppUpdateGate> {
         });
       }
     } catch (_) {
+      // Never lock a user out merely because the version check itself failed.
       if (!mounted) return;
       setState(() => _checking = false);
     }
