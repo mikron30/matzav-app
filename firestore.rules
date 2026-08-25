@@ -86,6 +86,13 @@ service cloud.firestore {
                 );
     }
 
+    // Public, read-only configuration used before sign-in to decide whether
+    // the installed app version should be updated.
+    match /app_config/{documentId} {
+      allow get: if documentId == 'version';
+      allow list, create, update, delete: if false;
+    }
+
     // Public status/profile is readable only by exact document lookup.
     // Listing all users is intentionally denied.
     match /profiles/{uid} {
