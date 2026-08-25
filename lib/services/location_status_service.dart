@@ -24,9 +24,17 @@ class LocationStatusService {
   }) async {
     if (_subscription != null) return;
     _uid = uid;
+
+    // Keep the in-memory state aligned with Firestore after an app restart.
+    // Without this, a user who was previously stored as "driving" could
+    // remain stuck in that state forever because the stop-driving branch
+    // only runs while _driving is true.
+    _driving = currentActivity == ActivityStatus.driving;
     if (currentActivity != ActivityStatus.driving) {
       _lastNonDriving = currentActivity;
     }
+    _fastSamples = 0;
+    _slowSamples = 0;
 
     final enabled = await Geolocator.isLocationServiceEnabled();
     if (!enabled) throw Exception('שירותי המיקום כבויים');
@@ -87,9 +95,11 @@ class LocationStatusService {
     if (_driving && _slowSamples >= 3) {
       _driving = false;
       final zoneActivity = await _activityForZone(uid, position);
+      final nextActivity = zoneActivity ?? _lastNonDriving;
+      _lastNonDriving = nextActivity;
       await UserRepository.instance.updateStatus(
         uid: uid,
-        activity: zoneActivity ?? _lastNonDriving,
+        activity: nextActivity,
       );
       return;
     }
