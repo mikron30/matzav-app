@@ -18,6 +18,11 @@
         <meta-data
             android:name="com.google.android.gms.ads.APPLICATION_ID"
             android:value="${matzavAdMobAppId}" />
+        <provider
+            android:name=".NativeStatusSyncProvider"
+            android:authorities="${applicationId}.native-status-sync"
+            android:exported="false"
+            android:initOrder="90" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
