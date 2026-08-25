@@ -202,9 +202,13 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           IconButton(
             tooltip: 'הגדרות',
-            onPressed: () => Navigator.of(
-              context,
-            ).push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
+            onPressed: () async {
+              await Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              );
+              if (!mounted) return;
+              await _restoreAutomationPreference();
+            },
             icon: const Icon(Icons.tune),
           ),
           IconButton(
@@ -243,7 +247,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   key: ValueKey(_statusUiRevision),
                   activity: activity,
                   availability: availability,
-                  automationOn: _automationOn,
                   onActivityChanged: (value) async {
                     if (value == ActivityStatus.meeting) {
                       final end = await showDialog<DateTime>(
@@ -310,8 +313,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     }
                     if (mounted) setState(() => _statusUiRevision++);
                   },
-                  onAutomationChanged: (value) =>
-                      _toggleAutomation(value, activity),
                 ),
                 const SizedBox(height: 22),
                 // MATZAV_V25_FRIENDS_THEME
@@ -787,18 +788,14 @@ class _MyStatusCard extends StatelessWidget {
     super.key,
     required this.activity,
     required this.availability,
-    required this.automationOn,
     required this.onActivityChanged,
     required this.onAvailabilityChanged,
-    required this.onAutomationChanged,
   });
 
   final ActivityStatus activity;
   final AvailabilityStatus availability;
-  final bool automationOn;
   final ValueChanged<ActivityStatus> onActivityChanged;
   final ValueChanged<AvailabilityStatus> onAvailabilityChanged;
-  final ValueChanged<bool> onAutomationChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -853,16 +850,6 @@ class _MyStatusCard extends StatelessWidget {
               onChanged: (value) {
                 if (value != null) onAvailabilityChanged(value);
               },
-            ),
-            const SizedBox(height: 8),
-            SwitchListTile.adaptive(
-              contentPadding: EdgeInsets.zero,
-              value: automationOn,
-              onChanged: onAutomationChanged,
-              title: const Text('זיהוי אוטומטי'),
-              subtitle: const Text(
-                'נסיעה + שיחה + שינה + אזורי בית/עבודה/כלב • פועל גם ברקע',
-              ),
             ),
           ],
         ),
