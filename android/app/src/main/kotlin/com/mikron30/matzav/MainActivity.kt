@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.telephony.TelephonyManager
 import com.google.android.gms.auth.api.identity.GetPhoneNumberHintIntentRequest
 import com.google.android.gms.auth.api.identity.Identity
 import io.flutter.embedding.android.FlutterActivity
@@ -35,11 +36,13 @@ class MainActivity : FlutterActivity() {
             "com.mikron30.matzav/automatic_status"
         private const val PHONE_HINT_REQUEST_CODE = 43127
         private const val CALL_PERMISSION_REQUEST_CODE = 43128
+        private const val PHONE_STATE_PERMISSION_REQUEST_CODE = 43129
     }
 
     private var pendingPhoneHintResult: MethodChannel.Result? = null
     private var pendingCallResult: MethodChannel.Result? = null
     private var pendingCallPhone: String? = null
+    private var pendingAutomaticStatusResult: MethodChannel.Result? = null
     private var automaticStatusChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -78,13 +81,7 @@ class MainActivity : FlutterActivity() {
         )
         automaticStatusChannel!!.setMethodCallHandler { call, result ->
             when (call.method) {
-                "startMonitoring" -> {
-                    AutomaticStatusMonitor.start(
-                        applicationContext,
-                        automaticStatusChannel!!,
-                    )
-                    result.success(null)
-                }
+                "startMonitoring" -> startAutomaticMonitoring(result)
                 "stopMonitoring" -> {
                     AutomaticStatusMonitor.stop(applicationContext)
                     result.success(null)
@@ -99,6 +96,35 @@ class MainActivity : FlutterActivity() {
         }
 
         AutomaticStatusMonitor.attachChannel(automaticStatusChannel!!)
+    }
+
+    private fun startAutomaticMonitoring(result: MethodChannel.Result) {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            checkSelfPermission(Manifest.permission.READ_PHONE_STATE) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            if (pendingAutomaticStatusResult != null) {
+                result.error(
+                    "PHONE_STATE_PERMISSION_ACTIVE",
+                    "Phone-state permission request is already active.",
+                    null,
+                )
+                return
+            }
+            pendingAutomaticStatusResult = result
+            requestPermissions(
+                arrayOf(Manifest.permission.READ_PHONE_STATE),
+                PHONE_STATE_PERMISSION_REQUEST_CODE,
+            )
+            return
+        }
+
+        AutomaticStatusMonitor.start(
+            applicationContext,
+            automaticStatusChannel!!,
+        )
+        result.success(null)
     }
 
     private fun requestDirectCall(phone: String, result: MethodChannel.Result) {
@@ -146,6 +172,22 @@ class MainActivity : FlutterActivity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == PHONE_STATE_PERMISSION_REQUEST_CODE) {
+            val result = pendingAutomaticStatusResult ?: return
+            pendingAutomaticStatusResult = null
+
+            // Automatic detection still starts if permission was denied;
+            // AudioManager remains as the VoIP/fallback detector. When Phone
+            // permission is granted, the aggregate Android call-state poller is
+            // enabled as well.
+            AutomaticStatusMonitor.start(
+                applicationContext,
+                automaticStatusChannel!!,
+            )
+            result.success(null)
+            return
+        }
 
         if (requestCode != CALL_PERMISSION_REQUEST_CODE) return
 
@@ -238,13 +280,15 @@ class MainActivity : FlutterActivity() {
 
 /**
  * Keeps two automatic temporary states:
- * 1. "onCall" when Android's audio mode indicates a phone/VoIP conversation.
+ * 1. "onCall" when Android reports an active phone/ConnectionService call OR
+ *    AudioManager reports a phone/VoIP communication mode.
  * 2. "sleeping" after 22:00 when the device has stayed non-interactive for
  *    at least 10 minutes. Sleeping ends on the first USER_PRESENT unlock.
  *
- * The monitor does not inspect call audio, phone numbers, call logs, or screen
- * content. The location foreground service from the Flutter side keeps the app
- * process alive while Automatic Detection is enabled.
+ * The monitor does not read phone numbers, call logs, call audio, or message
+ * content. READ_PHONE_STATE is used only for the aggregate call-state value.
+ * The location foreground service from Flutter keeps the app process alive
+ * while Automatic Detection is enabled.
  */
 object AutomaticStatusMonitor {
     private const val PREFS = "matzav_automatic_status_v20"
@@ -256,13 +300,18 @@ object AutomaticStatusMonitor {
 
     private const val SLEEP_DELAY_MS = 10L * 60L * 1000L
     private const val SLEEP_ALARM_REQUEST_CODE = 43201
+    private const val CALL_STATE_POLL_MS = 2000L
 
     private var channel: MethodChannel? = null
     private var screenReceiver: BroadcastReceiver? = null
     private var audioManager: AudioManager? = null
     private var modeListener: AudioManager.OnModeChangedListener? = null
+    private var telephonyManager: TelephonyManager? = null
+    private var phoneStatePoll: Runnable? = null
     private val handler = Handler(Looper.getMainLooper())
     private var legacyAudioPoll: Runnable? = null
+    private var audioCallActive = false
+    private var phoneCallActive = false
 
     fun attachChannel(newChannel: MethodChannel) {
         channel = newChannel
@@ -304,6 +353,7 @@ object AutomaticStatusMonitor {
         }
 
         startAudioMonitoring(appContext)
+        startPhoneCallMonitoring(appContext)
 
         val powerManager =
             appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -327,6 +377,7 @@ object AutomaticStatusMonitor {
         }
 
         updateCallStateFromAudio(appContext)
+        updateCallStateFromPhone(appContext)
     }
 
     fun stop(context: Context) {
@@ -348,6 +399,7 @@ object AutomaticStatusMonitor {
         screenReceiver = null
 
         stopAudioMonitoring()
+        stopPhoneCallMonitoring()
         cancelSleepAlarm(appContext)
         emitCurrentOverride(appContext)
     }
@@ -438,7 +490,7 @@ object AutomaticStatusMonitor {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val listener = AudioManager.OnModeChangedListener { mode ->
-                setCallActive(context, isCommunicationMode(mode))
+                setAudioCallActive(context, isCommunicationMode(mode))
             }
             modeListener = listener
             manager.addOnModeChangedListener(context.mainExecutor, listener)
@@ -446,7 +498,7 @@ object AutomaticStatusMonitor {
             val poll = object : Runnable {
                 override fun run() {
                     val currentManager = audioManager ?: return
-                    setCallActive(
+                    setAudioCallActive(
                         context,
                         isCommunicationMode(currentManager.mode),
                     )
@@ -477,17 +529,89 @@ object AutomaticStatusMonitor {
         legacyAudioPoll = null
         modeListener = null
         audioManager = null
+        audioCallActive = false
+    }
+
+    private fun startPhoneCallMonitoring(context: Context) {
+        if (telephonyManager != null) return
+
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            phoneCallActive = false
+            updateCombinedCallState(context)
+            return
+        }
+
+        val manager =
+            context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        telephonyManager = manager
+
+        val poll = object : Runnable {
+            override fun run() {
+                val currentManager = telephonyManager ?: return
+                val active = try {
+                    @Suppress("DEPRECATION")
+                    currentManager.callState == TelephonyManager.CALL_STATE_OFFHOOK
+                } catch (_: SecurityException) {
+                    false
+                } catch (_: UnsupportedOperationException) {
+                    false
+                }
+
+                setPhoneCallActive(context, active)
+                handler.postDelayed(this, CALL_STATE_POLL_MS)
+            }
+        }
+        phoneStatePoll = poll
+        handler.post(poll)
+    }
+
+    private fun stopPhoneCallMonitoring() {
+        phoneStatePoll?.let { handler.removeCallbacks(it) }
+        phoneStatePoll = null
+        telephonyManager = null
+        phoneCallActive = false
     }
 
     private fun updateCallStateFromAudio(context: Context) {
         val manager =
             audioManager ?: context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        setCallActive(context, isCommunicationMode(manager.mode))
+        setAudioCallActive(context, isCommunicationMode(manager.mode))
     }
 
-    private fun setCallActive(context: Context, active: Boolean) {
+    private fun updateCallStateFromPhone(context: Context) {
+        val manager = telephonyManager ?: return
+        val active = try {
+            @Suppress("DEPRECATION")
+            manager.callState == TelephonyManager.CALL_STATE_OFFHOOK
+        } catch (_: SecurityException) {
+            false
+        } catch (_: UnsupportedOperationException) {
+            false
+        }
+        setPhoneCallActive(context, active)
+    }
+
+    private fun setAudioCallActive(context: Context, active: Boolean) {
+        if (audioCallActive == active) return
+        audioCallActive = active
+        updateCombinedCallState(context)
+    }
+
+    private fun setPhoneCallActive(context: Context, active: Boolean) {
+        if (phoneCallActive == active) return
+        phoneCallActive = active
+        updateCombinedCallState(context)
+    }
+
+    private fun updateCombinedCallState(context: Context) {
         val prefs = prefs(context)
         if (!prefs.getBoolean(KEY_ENABLED, false)) return
+
+        val active = audioCallActive || phoneCallActive
         if (prefs.getBoolean(KEY_CALL_ACTIVE, false) == active) return
 
         prefs.edit().putBoolean(KEY_CALL_ACTIVE, active).apply()
