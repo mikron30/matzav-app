@@ -2,12 +2,8 @@ package com.mikron30.matzav
 
 import android.Manifest
 import android.app.Activity
-import android.app.AlarmManager
-import android.app.PendingIntent
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.media.AudioManager
@@ -15,18 +11,12 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.PowerManager
 import android.telephony.TelephonyManager
 import com.google.android.gms.auth.api.identity.GetPhoneNumberHintIntentRequest
 import com.google.android.gms.auth.api.identity.Identity
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
-import kotlin.math.max
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -36,7 +26,7 @@ class MainActivity : FlutterActivity() {
             "com.mikron30.matzav/automatic_status"
         private const val PHONE_HINT_REQUEST_CODE = 43127
         private const val CALL_PERMISSION_REQUEST_CODE = 43128
-        private const val PHONE_STATE_PERMISSION_REQUEST_CODE = 43129
+        private const val AUTOMATIC_PERMISSION_REQUEST_CODE = 43129
     }
 
     private var pendingPhoneHintResult: MethodChannel.Result? = null
@@ -98,25 +88,41 @@ class MainActivity : FlutterActivity() {
         AutomaticStatusMonitor.attachChannel(automaticStatusChannel!!)
     }
 
-    private fun startAutomaticMonitoring(result: MethodChannel.Result) {
+    private fun missingAutomaticPermissions(): Array<String> {
+        val missing = mutableListOf<String>()
+
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
             checkSelfPermission(Manifest.permission.READ_PHONE_STATE) !=
             PackageManager.PERMISSION_GRANTED
         ) {
+            missing.add(Manifest.permission.READ_PHONE_STATE)
+        }
+
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            missing.add(Manifest.permission.ACTIVITY_RECOGNITION)
+        }
+
+        return missing.toTypedArray()
+    }
+
+    private fun startAutomaticMonitoring(result: MethodChannel.Result) {
+        val missing = missingAutomaticPermissions()
+        if (missing.isNotEmpty()) {
             if (pendingAutomaticStatusResult != null) {
                 result.error(
-                    "PHONE_STATE_PERMISSION_ACTIVE",
-                    "Phone-state permission request is already active.",
+                    "AUTOMATIC_PERMISSION_ACTIVE",
+                    "Automatic-detection permission request is already active.",
                     null,
                 )
                 return
             }
             pendingAutomaticStatusResult = result
-            requestPermissions(
-                arrayOf(Manifest.permission.READ_PHONE_STATE),
-                PHONE_STATE_PERMISSION_REQUEST_CODE,
-            )
+            requestPermissions(missing, AUTOMATIC_PERMISSION_REQUEST_CODE)
             return
         }
 
@@ -173,14 +179,13 @@ class MainActivity : FlutterActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 
-        if (requestCode == PHONE_STATE_PERMISSION_REQUEST_CODE) {
+        if (requestCode == AUTOMATIC_PERMISSION_REQUEST_CODE) {
             val result = pendingAutomaticStatusResult ?: return
             pendingAutomaticStatusResult = null
 
-            // Automatic detection still starts if permission was denied;
-            // AudioManager remains as the VoIP/fallback detector. When Phone
-            // permission is granted, the aggregate Android call-state poller is
-            // enabled as well.
+            // Automatic detection still starts when one permission is denied.
+            // Phone calls fall back to AudioManager and sleep falls back to a
+            // conservative screen-idle rule if Activity Recognition is absent.
             AutomaticStatusMonitor.start(
                 applicationContext,
                 automaticStatusChannel!!,
@@ -279,31 +284,22 @@ class MainActivity : FlutterActivity() {
 }
 
 /**
- * Keeps two automatic temporary states:
- * 1. "onCall" when Android reports an active phone/ConnectionService call OR
- *    AudioManager reports a phone/VoIP communication mode.
- * 2. "sleeping" after 22:00 when the device has stayed non-interactive for
- *    at least 10 minutes. Sleeping ends on the first USER_PRESENT unlock.
+ * Aggregates two independent call detectors:
+ * 1. Android telephony state for regular cellular calls.
+ * 2. AudioManager communication mode for VoIP/WhatsApp/etc.
  *
- * The monitor does not read phone numbers, call logs, call audio, or message
- * content. READ_PHONE_STATE is used only for the aggregate call-state value.
- * The location foreground service from Flutter keeps the app process alive
- * while Automatic Detection is enabled.
+ * Sleep state is produced by NativeSleepScheduler using Google's Sleep API
+ * with a conservative idle fallback. Neither detector reads phone numbers,
+ * call logs, audio content, or message content.
  */
 object AutomaticStatusMonitor {
     private const val PREFS = "matzav_automatic_status_v20"
     private const val KEY_ENABLED = "enabled"
     private const val KEY_CALL_ACTIVE = "call_active"
     private const val KEY_SLEEP_ACTIVE = "sleep_active"
-    private const val KEY_SCREEN_OFF_AT = "screen_off_at"
-    private const val KEY_COMPLETED_NIGHT = "completed_night"
-
-    private const val SLEEP_DELAY_MS = 10L * 60L * 1000L
-    private const val SLEEP_ALARM_REQUEST_CODE = 43201
     private const val CALL_STATE_POLL_MS = 2000L
 
     private var channel: MethodChannel? = null
-    private var screenReceiver: BroadcastReceiver? = null
     private var audioManager: AudioManager? = null
     private var modeListener: AudioManager.OnModeChangedListener? = null
     private var telephonyManager: TelephonyManager? = null
@@ -320,64 +316,15 @@ object AutomaticStatusMonitor {
     fun start(context: Context, newChannel: MethodChannel) {
         channel = newChannel
         val appContext = context.applicationContext
-        val prefs = prefs(appContext)
-        prefs.edit().putBoolean(KEY_ENABLED, true).apply()
-
-        if (screenReceiver == null) {
-            screenReceiver = object : BroadcastReceiver() {
-                override fun onReceive(receiverContext: Context, intent: Intent) {
-                    when (intent.action) {
-                        Intent.ACTION_SCREEN_OFF ->
-                            handleScreenOff(receiverContext.applicationContext)
-                        Intent.ACTION_USER_PRESENT ->
-                            handleUserPresent(receiverContext.applicationContext)
-                    }
-                }
-            }
-
-            val filter = IntentFilter().apply {
-                addAction(Intent.ACTION_SCREEN_OFF)
-                addAction(Intent.ACTION_USER_PRESENT)
-            }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                appContext.registerReceiver(
-                    screenReceiver,
-                    filter,
-                    Context.RECEIVER_EXPORTED,
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                appContext.registerReceiver(screenReceiver, filter)
-            }
-        }
+        prefs(appContext).edit().putBoolean(KEY_ENABLED, true).apply()
 
         startAudioMonitoring(appContext)
         startPhoneCallMonitoring(appContext)
-
-        val powerManager =
-            appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (powerManager.isInteractive) {
-            if (prefs.getBoolean(KEY_SLEEP_ACTIVE, false)) {
-                prefs.edit()
-                    .putBoolean(KEY_SLEEP_ACTIVE, false)
-                    .putString(KEY_COMPLETED_NIGHT, nightKey(System.currentTimeMillis()))
-                    .apply()
-            }
-            prefs.edit().remove(KEY_SCREEN_OFF_AT).apply()
-            cancelSleepAlarm(appContext)
-            emitCurrentOverride(appContext)
-        } else {
-            if (!prefs.contains(KEY_SCREEN_OFF_AT)) {
-                prefs.edit()
-                    .putLong(KEY_SCREEN_OFF_AT, System.currentTimeMillis())
-                    .apply()
-            }
-            scheduleSleepCheck(appContext)
-        }
+        NativeSleepScheduler.reconcile(appContext)
 
         updateCallStateFromAudio(appContext)
         updateCallStateFromPhone(appContext)
+        emitCurrentOverride(appContext)
     }
 
     fun stop(context: Context) {
@@ -386,21 +333,11 @@ object AutomaticStatusMonitor {
             .putBoolean(KEY_ENABLED, false)
             .putBoolean(KEY_CALL_ACTIVE, false)
             .putBoolean(KEY_SLEEP_ACTIVE, false)
-            .remove(KEY_SCREEN_OFF_AT)
             .apply()
-
-        screenReceiver?.let {
-            try {
-                appContext.unregisterReceiver(it)
-            } catch (_: Exception) {
-                // Already unregistered.
-            }
-        }
-        screenReceiver = null
 
         stopAudioMonitoring()
         stopPhoneCallMonitoring()
-        cancelSleepAlarm(appContext)
+        NativeSleepScheduler.reconcile(appContext)
         emitCurrentOverride(appContext)
     }
 
@@ -413,73 +350,8 @@ object AutomaticStatusMonitor {
         }
     }
 
-    fun handleSleepAlarm(context: Context) {
-        val appContext = context.applicationContext
-        val prefs = prefs(appContext)
-        if (!prefs.getBoolean(KEY_ENABLED, false)) return
-
-        val now = System.currentTimeMillis()
-        if (!nightWindowEligible(now)) {
-            scheduleSleepCheck(appContext)
-            return
-        }
-
-        val powerManager =
-            appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (powerManager.isInteractive) {
-            prefs.edit().remove(KEY_SCREEN_OFF_AT).apply()
-            return
-        }
-
-        val completed = prefs.getString(KEY_COMPLETED_NIGHT, null)
-        if (completed == nightKey(now)) return
-
-        val screenOffAt = prefs.getLong(KEY_SCREEN_OFF_AT, 0L)
-        if (screenOffAt <= 0L) {
-            prefs.edit().putLong(KEY_SCREEN_OFF_AT, now).apply()
-            scheduleSleepCheck(appContext)
-            return
-        }
-
-        val elapsed = now - screenOffAt
-        if (elapsed < SLEEP_DELAY_MS) {
-            scheduleSleepCheck(appContext)
-            return
-        }
-
-        prefs.edit().putBoolean(KEY_SLEEP_ACTIVE, true).apply()
-        emitCurrentOverride(appContext)
-    }
-
-    private fun handleScreenOff(context: Context) {
-        val prefs = prefs(context)
-        if (!prefs.getBoolean(KEY_ENABLED, false)) return
-
-        prefs.edit()
-            .putLong(KEY_SCREEN_OFF_AT, System.currentTimeMillis())
-            .apply()
-        scheduleSleepCheck(context)
-    }
-
-    private fun handleUserPresent(context: Context) {
-        val prefs = prefs(context)
-        if (!prefs.getBoolean(KEY_ENABLED, false)) return
-
-        val wasSleeping = prefs.getBoolean(KEY_SLEEP_ACTIVE, false)
-        val editor = prefs.edit()
-            .remove(KEY_SCREEN_OFF_AT)
-            .putBoolean(KEY_SLEEP_ACTIVE, false)
-
-        if (wasSleeping) {
-            editor.putString(
-                KEY_COMPLETED_NIGHT,
-                nightKey(System.currentTimeMillis()),
-            )
-        }
-        editor.apply()
-
-        cancelSleepAlarm(context)
-        emitCurrentOverride(context)
+    fun onSleepStateChanged(context: Context) {
+        emitCurrentOverride(context.applicationContext)
     }
 
     private fun startAudioMonitoring(context: Context) {
@@ -512,10 +384,7 @@ object AutomaticStatusMonitor {
 
     private fun stopAudioMonitoring() {
         val manager = audioManager
-        if (
-            manager != null &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-        ) {
+        if (manager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             modeListener?.let {
                 try {
                     manager.removeOnModeChangedListener(it)
@@ -634,77 +503,6 @@ object AutomaticStatusMonitor {
         return false
     }
 
-    private fun scheduleSleepCheck(context: Context) {
-        val prefs = prefs(context)
-        if (!prefs.getBoolean(KEY_ENABLED, false)) return
-
-        val now = System.currentTimeMillis()
-        val screenOffAt = prefs.getLong(KEY_SCREEN_OFF_AT, now)
-        val idleTarget = screenOffAt + SLEEP_DELAY_MS
-        val triggerAt = max(idleTarget, nextNightStartIfNeeded(now))
-
-        val alarmManager =
-            context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        alarmManager.setAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            triggerAt,
-            sleepPendingIntent(context),
-        )
-    }
-
-    private fun nextNightStartIfNeeded(now: Long): Long {
-        val calendar = Calendar.getInstance().apply {
-            timeInMillis = now
-        }
-        val hour = calendar.get(Calendar.HOUR_OF_DAY)
-
-        // 22:00 through 11:59 belongs to the nighttime window.
-        if (hour >= 22 || hour < 12) return now
-
-        calendar.set(Calendar.HOUR_OF_DAY, 22)
-        calendar.set(Calendar.MINUTE, 0)
-        calendar.set(Calendar.SECOND, 0)
-        calendar.set(Calendar.MILLISECOND, 0)
-        return calendar.timeInMillis
-    }
-
-    private fun nightWindowEligible(now: Long): Boolean {
-        val calendar = Calendar.getInstance().apply {
-            timeInMillis = now
-        }
-        val hour = calendar.get(Calendar.HOUR_OF_DAY)
-        return hour >= 22 || hour < 12
-    }
-
-    private fun nightKey(now: Long): String {
-        val calendar = Calendar.getInstance().apply {
-            timeInMillis = now
-        }
-        if (calendar.get(Calendar.HOUR_OF_DAY) < 22) {
-            calendar.add(Calendar.DAY_OF_YEAR, -1)
-        }
-        return SimpleDateFormat(
-            "yyyy-MM-dd",
-            Locale.US,
-        ).format(Date(calendar.timeInMillis))
-    }
-
-    private fun cancelSleepAlarm(context: Context) {
-        val alarmManager =
-            context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        alarmManager.cancel(sleepPendingIntent(context))
-    }
-
-    private fun sleepPendingIntent(context: Context): PendingIntent {
-        val intent = Intent(context, SleepCheckReceiver::class.java)
-        return PendingIntent.getBroadcast(
-            context,
-            SLEEP_ALARM_REQUEST_CODE,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-    }
-
     private fun emitCurrentOverride(context: Context) {
         val value = currentOverride(context)
         Handler(Looper.getMainLooper()).post {
@@ -717,10 +515,4 @@ object AutomaticStatusMonitor {
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-}
-
-class SleepCheckReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent?) {
-        AutomaticStatusMonitor.handleSleepAlarm(context.applicationContext)
-    }
 }
