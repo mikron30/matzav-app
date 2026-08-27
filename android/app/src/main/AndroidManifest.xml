@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -47,10 +49,10 @@
             </intent-filter>
         </activity>
         <receiver
-            android:name=".SleepCheckReceiver"
+            android:name=".NativeSleepCheckReceiver"
             android:exported="false" />
         <receiver
-            android:name=".NativeSleepCheckReceiver"
+            android:name=".SleepUpdateReceiver"
             android:exported="false" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
