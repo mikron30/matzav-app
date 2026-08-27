@@ -3,8 +3,12 @@ package com.mikron30.matzav
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
+import android.media.AudioManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.telephony.TelephonyManager
 
 /**
@@ -23,7 +27,14 @@ class PhoneStateReceiver : BroadcastReceiver() {
         private const val KEY_ENABLED = "enabled"
         private const val KEY_CALL_ENABLED = "call_enabled"
         private const val KEY_CALL_ACTIVE = "call_active"
-        private const val ASYNC_GRACE_MS = 7_500L
+
+        // Some Android/vendor audio stacks keep MODE_IN_CALL or
+        // MODE_IN_COMMUNICATION for a few seconds after TelephonyManager already
+        // reports IDLE. The in-app monitor combines phone + audio state, so a
+        // stale audio mode could otherwise turn a finished cellular call back on.
+        private const val CALL_END_CLEANUP_MS = 6_000L
+        private const val CALL_END_RECHECK_MS = 400L
+        private const val FIRESTORE_GRACE_MS = 1_200L
     }
 
     override fun onReceive(context: Context, intent: Intent?) {
@@ -38,44 +49,116 @@ class PhoneStateReceiver : BroadcastReceiver() {
             return
         }
 
-        val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE) ?: return
-        val active = when (state) {
-            TelephonyManager.EXTRA_STATE_OFFHOOK -> true
+        when (intent.getStringExtra(TelephonyManager.EXTRA_STATE)) {
+            TelephonyManager.EXTRA_STATE_OFFHOOK -> {
+                if (!prefs.getBoolean(KEY_CALL_ACTIVE, false)) {
+                    // commit() is deliberate: the value must be on disk before
+                    // onReceive can finish, especially on a cold-started process.
+                    prefs.edit().putBoolean(KEY_CALL_ACTIVE, true).commit()
+                }
+                keepProcessAliveForFirestore()
+            }
+
             TelephonyManager.EXTRA_STATE_IDLE -> {
                 // On dual-SIM devices one subscription may become IDLE while a
                 // call on the other subscription is still active. Query the
                 // aggregate device call state before clearing Matzav's status.
-                try {
-                    @Suppress("DEPRECATION")
-                    val manager = appContext.getSystemService(
-                        Context.TELEPHONY_SERVICE,
-                    ) as TelephonyManager
-                    manager.callState == TelephonyManager.CALL_STATE_OFFHOOK
-                } catch (_: Exception) {
-                    false
+                val aggregateState = currentPhoneState(appContext)
+                if (aggregateState == TelephonyManager.CALL_STATE_OFFHOOK) {
+                    return
                 }
+
+                // IDLE is authoritative for the end of a cellular conversation.
+                // Clear immediately, then keep clearing briefly until the vendor
+                // AudioManager leaves its lingering call mode.
+                if (prefs.getBoolean(KEY_CALL_ACTIVE, false)) {
+                    prefs.edit().putBoolean(KEY_CALL_ACTIVE, false).commit()
+                }
+                cleanupAfterCellularCall(appContext, prefs)
             }
+
             // Ringing by itself is not yet an active conversation. If another
-            // call is already active (call waiting), leave the current value as-is.
-            TelephonyManager.EXTRA_STATE_RINGING -> return
-            else -> return
+            // call is already active (call waiting), keep the current value.
+            TelephonyManager.EXTRA_STATE_RINGING -> Unit
         }
+    }
 
-        if (prefs.getBoolean(KEY_CALL_ACTIVE, false) == active) return
-
-        // commit() is deliberate: the value must be on disk before onReceive
-        // can finish, so a cold-started process cannot lose the transition.
-        prefs.edit().putBoolean(KEY_CALL_ACTIVE, active).commit()
-
-        // NativeStatusSyncProvider performs an asynchronous Firestore read/write
-        // after the preference changes. Keep the broadcast process important for
-        // a short bounded window so that write can be queued even when the UI is
-        // completely closed.
+    private fun keepProcessAliveForFirestore() {
         val pendingResult = goAsync()
         Handler(Looper.getMainLooper()).postDelayed(
             { pendingResult.finish() },
-            ASYNC_GRACE_MS,
+            FIRESTORE_GRACE_MS,
         )
+    }
+
+    private fun cleanupAfterCellularCall(
+        context: Context,
+        prefs: SharedPreferences,
+    ) {
+        val pendingResult = goAsync()
+        val handler = Handler(Looper.getMainLooper())
+        val startedAt = SystemClock.elapsedRealtime()
+        val audioManager =
+            context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        lateinit var check: Runnable
+        check = Runnable {
+            // Stop cleanup immediately if another cellular call started.
+            if (currentPhoneState(context) != TelephonyManager.CALL_STATE_IDLE) {
+                pendingResult.finish()
+                return@Runnable
+            }
+
+            // The foreground in-app poller can briefly write true again while
+            // AudioManager is still unwinding. Keep the authoritative IDLE state.
+            if (prefs.getBoolean(KEY_CALL_ACTIVE, false)) {
+                prefs.edit().putBoolean(KEY_CALL_ACTIVE, false).commit()
+            }
+
+            val elapsed = SystemClock.elapsedRealtime() - startedAt
+            val audioStillInCallMode = isCommunicationMode(audioManager.mode)
+
+            if (!audioStillInCallMode || elapsed >= CALL_END_CLEANUP_MS) {
+                // Leave a short bounded window for NativeStatusSyncProvider to
+                // queue the Firestore restoration and trigger call-wait alerts.
+                handler.postDelayed(
+                    { pendingResult.finish() },
+                    FIRESTORE_GRACE_MS,
+                )
+            } else {
+                handler.postDelayed(check, CALL_END_RECHECK_MS)
+            }
+        }
+
+        handler.post(check)
+    }
+
+    private fun currentPhoneState(context: Context): Int {
+        return try {
+            @Suppress("DEPRECATION")
+            val manager = context.getSystemService(
+                Context.TELEPHONY_SERVICE,
+            ) as TelephonyManager
+            manager.callState
+        } catch (_: Exception) {
+            TelephonyManager.CALL_STATE_IDLE
+        }
+    }
+
+    private fun isCommunicationMode(mode: Int): Boolean {
+        if (
+            mode == AudioManager.MODE_IN_CALL ||
+            mode == AudioManager.MODE_IN_COMMUNICATION
+        ) {
+            return true
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return mode == AudioManager.MODE_CALL_REDIRECT ||
+                mode == AudioManager.MODE_COMMUNICATION_REDIRECT
+        }
+
+        return false
     }
 }
 
