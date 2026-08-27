@@ -60,20 +60,21 @@ class PhoneStateReceiver : BroadcastReceiver() {
             }
 
             TelephonyManager.EXTRA_STATE_IDLE -> {
-                // On dual-SIM devices one subscription may become IDLE while a
-                // call on the other subscription is still active. Query the
-                // aggregate device call state before clearing Matzav's status.
-                val aggregateState = currentPhoneState(appContext)
-                if (aggregateState == TelephonyManager.CALL_STATE_OFFHOOK) {
-                    return
-                }
-
-                // IDLE is authoritative for the end of a cellular conversation.
-                // Clear immediately, then keep clearing briefly until the vendor
-                // AudioManager leaves its lingering call mode.
+                // EXTRA_STATE_IDLE is the call-state transition Android just
+                // delivered to us. Treat it as authoritative and clear the
+                // public call state immediately. Previously we queried
+                // TelephonyManager.callState again here; on some Samsung/vendor
+                // stacks that second query can briefly still return OFFHOOK,
+                // causing the IDLE broadcast to be discarded and leaving the
+                // user shown as "on call" for tens of seconds or longer.
                 if (prefs.getBoolean(KEY_CALL_ACTIVE, false)) {
                     prefs.edit().putBoolean(KEY_CALL_ACTIVE, false).commit()
                 }
+
+                // Continue clearing for a short bounded window because the audio
+                // subsystem can lag behind telephony by several seconds. This
+                // does NOT delay the Firestore update above; it only prevents a
+                // stale AudioManager callback from turning the call back on.
                 cleanupAfterCellularCall(appContext, prefs)
             }
 
@@ -103,14 +104,16 @@ class PhoneStateReceiver : BroadcastReceiver() {
 
         lateinit var check: Runnable
         check = Runnable {
-            // Stop cleanup immediately if another cellular call started.
-            if (currentPhoneState(context) != TelephonyManager.CALL_STATE_IDLE) {
+            // If a new cellular call has already started, stop the cleanup so
+            // we never overwrite the new OFFHOOK transition.
+            if (currentPhoneState(context) == TelephonyManager.CALL_STATE_OFFHOOK) {
                 pendingResult.finish()
                 return@Runnable
             }
 
             // The foreground in-app poller can briefly write true again while
-            // AudioManager is still unwinding. Keep the authoritative IDLE state.
+            // AudioManager is still unwinding. Keep Android's IDLE transition
+            // authoritative during this short cleanup window.
             if (prefs.getBoolean(KEY_CALL_ACTIVE, false)) {
                 prefs.edit().putBoolean(KEY_CALL_ACTIVE, false).commit()
             }
