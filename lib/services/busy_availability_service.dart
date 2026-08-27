@@ -1,7 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/status_models.dart';
-import 'status_timer_service.dart';
 
 /// Keeps availability on "do not disturb" while the user's activity is one of
 /// the temporary busy states: meeting, phone call, or sleeping.
@@ -22,6 +21,12 @@ class BusyAvailabilityService {
     return activity == ActivityStatus.meeting ||
         activity == ActivityStatus.onCall ||
         activity == ActivityStatus.sleeping;
+  }
+
+  static DateTime? _dateFrom(dynamic value) {
+    if (value is Timestamp) return value.toDate();
+    if (value is DateTime) return value;
+    return null;
   }
 
   Future<void> syncForActivity(String uid, ActivityStatus activity) async {
@@ -59,7 +64,7 @@ class BusyAvailabilityService {
         // user was sleeping/in a meeting/on a call, restore the status that was
         // active before the timer instead of restoring stale DND.
         if (restore == AvailabilityStatus.doNotDisturb) {
-          final end = StatusTimerService.dateFrom(data['availabilityTimerEndsAt']);
+          final end = _dateFrom(data['availabilityTimerEndsAt']);
           if (end != null && !DateTime.now().isBefore(end)) {
             restore = availabilityFromString(
               data['availabilityTimerPrevious'] as String?,
