@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/status_models.dart';
+import 'busy_availability_service.dart';
 
 class StatusTimerService {
   StatusTimerService._();
@@ -84,6 +85,10 @@ class StatusTimerService {
       'activityTimerPrevious': previous.name,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+    await BusyAvailabilityService.instance.syncForActivity(
+      uid,
+      ActivityStatus.meeting,
+    );
 
     _scheduleActivity(uid, endsAt);
   }
@@ -122,6 +127,7 @@ class StatusTimerService {
       'activityTimerPrevious': FieldValue.delete(),
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+    await BusyAvailabilityService.instance.syncForActivity(uid, activity);
   }
 
   Future<void> setManualAvailability({
@@ -138,6 +144,15 @@ class StatusTimerService {
       'availabilityTimerPrevious': FieldValue.delete(),
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+
+    final profile = await _db.collection('profiles').doc(uid).get();
+    final currentActivity = activityFromString(
+      profile.data()?['activity'] as String?,
+    );
+    await BusyAvailabilityService.instance.syncForActivity(
+      uid,
+      currentActivity,
+    );
   }
 
   Future<void> syncAndSchedule(
@@ -177,6 +192,11 @@ class StatusTimerService {
         await _restoreAvailability(uid);
       }
     }
+
+    await BusyAvailabilityService.instance.syncForActivity(
+      uid,
+      effectiveActivity(profile),
+    );
   }
 
   Future<bool> isMeetingTimerActive() async {
@@ -223,6 +243,7 @@ class StatusTimerService {
         'activityTimerPrevious': FieldValue.delete(),
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
+      await BusyAvailabilityService.instance.syncForActivity(uid, previous);
       await _clearActivityPrefs();
     }
     // If call/sleep/driving is currently overriding the meeting, keep the
@@ -246,6 +267,15 @@ class StatusTimerService {
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
     await _clearAvailabilityPrefs();
+
+    final updatedProfile = await ref.get();
+    final currentActivity = activityFromString(
+      updatedProfile.data()?['activity'] as String?,
+    );
+    await BusyAvailabilityService.instance.syncForActivity(
+      uid,
+      currentActivity,
+    );
   }
 
   Future<void> _clearActivityTimerMetadata(String uid) async {
