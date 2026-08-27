@@ -2,15 +2,15 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/status_models.dart';
+import 'busy_availability_service.dart';
 import 'status_timer_service.dart';
 import 'user_repository.dart';
 
 /// Coordinates Android automatic overrides that take priority over location:
-/// an active audio/phone conversation and nighttime sleep detection.
+/// an active phone/VoIP conversation and sleep detection.
 ///
-/// The native side only reads Android's current audio mode and interactive
-/// screen state. It does not read call audio, caller identity, call logs, or
-/// message content.
+/// The Android side detects only aggregate call/sleep state. It does not read
+/// call audio, caller identity, call logs, or message content.
 class AutomaticStatusService {
   AutomaticStatusService._();
   static final instance = AutomaticStatusService._();
@@ -87,6 +87,12 @@ class AutomaticStatusService {
 
     if (normalized == previousOverride) {
       _currentOverride = normalized;
+      if (normalized != 'none') {
+        final activity = normalized == ActivityStatus.onCall.name
+            ? ActivityStatus.onCall
+            : ActivityStatus.sleeping;
+        await BusyAvailabilityService.instance.syncForActivity(uid, activity);
+      }
       return;
     }
 
@@ -112,6 +118,10 @@ class AutomaticStatusService {
         uid: uid,
         activity: automaticActivity,
       );
+      await BusyAvailabilityService.instance.syncForActivity(
+        uid,
+        automaticActivity,
+      );
     } else {
       final previousName = prefs.getString(_previousActivityKey);
       var previous = activityFromString(previousName);
@@ -123,6 +133,7 @@ class AutomaticStatusService {
         uid: uid,
         activity: previous,
       );
+      await BusyAvailabilityService.instance.syncForActivity(uid, previous);
       await prefs.remove(_previousActivityKey);
     }
 
