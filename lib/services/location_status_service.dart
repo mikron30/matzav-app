@@ -121,10 +121,26 @@ class LocationStatusService {
     required String uid,
     required ActivityStatus currentActivity,
   }) async {
+    final featureSettings = await AutomationPreferences.instance.load();
+    var activityForRestart = currentActivity;
+
+    // If driving was the automatic temporary state and the user switches that
+    // detector off, do not leave the public profile stuck on "driving".
+    if (!featureSettings.driving && currentActivity == ActivityStatus.driving) {
+      activityForRestart = await StatusTimerService.instance.resolveActivityReturn(
+        uid,
+        _lastNonDriving,
+      );
+      await UserRepository.instance.updateStatus(
+        uid: uid,
+        activity: activityForRestart,
+      );
+    }
+
     await stop();
     await start(
       uid: uid,
-      currentActivity: currentActivity,
+      currentActivity: activityForRestart,
       remember: false,
     );
   }
