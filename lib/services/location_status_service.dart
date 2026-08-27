@@ -20,6 +20,7 @@ class LocationStatusService {
   bool _driving = false;
   bool _drivingEnabled = true;
   bool _zonesEnabled = true;
+  bool _awayEnabled = true;
   ActivityStatus _lastNonDriving = ActivityStatus.home;
 
   bool get running => _subscription != null;
@@ -43,6 +44,7 @@ class LocationStatusService {
     final featureSettings = await AutomationPreferences.instance.load();
     _drivingEnabled = featureSettings.driving;
     _zonesEnabled = featureSettings.zones;
+    _awayEnabled = featureSettings.away;
 
     if (!featureSettings.locationEnabled) {
       await stop();
@@ -74,24 +76,19 @@ class LocationStatusService {
 
     final LocationSettings settings;
     if (defaultTargetPlatform == TargetPlatform.android) {
-      final title = _drivingEnabled && _zonesEnabled
-          ? 'Matzav – זיהוי מיקום פעיל'
-          : _drivingEnabled
-          ? 'Matzav – זיהוי נסיעה פעיל'
-          : 'Matzav – זיהוי אזורים פעיל';
-      final text = _drivingEnabled && _zonesEnabled
-          ? 'Matzav משתמשת במיקום כדי לזהות נסיעה ואזורים שהוגדרו.'
-          : _drivingEnabled
-          ? 'Matzav בודקת מהירות כדי לעדכן אוטומטית את הסטטוס.'
-          : 'Matzav בודקת אם נכנסת לאזור בית/עבודה/כלב שהוגדר.';
-
+      final activeParts = <String>[
+        if (_drivingEnabled) 'נהיגה',
+        if (_zonesEnabled) 'אזורים',
+        if (_awayEnabled) 'בית/לא בבית',
+      ];
       settings = AndroidSettings(
         accuracy: LocationAccuracy.high,
         distanceFilter: 5,
         intervalDuration: const Duration(seconds: 5),
         foregroundNotificationConfig: ForegroundNotificationConfig(
-          notificationTitle: title,
-          notificationText: text,
+          notificationTitle: 'Matzav – זיהוי מיקום פעיל',
+          notificationText:
+              'זיהוי פעיל: ${activeParts.join(' + ')}. Matzav משתמשת ב־GPS לעדכון הסטטוס.',
           notificationChannelName: 'זיהוי מיקום אוטומטי',
           setOngoing: true,
           enableWakeLock: false,
@@ -202,12 +199,12 @@ class LocationStatusService {
         );
         final meetingTimerActive = await StatusTimerService.instance
             .isMeetingTimerActive();
-        final zoneActivity = meetingTimerActive || !_zonesEnabled
+        final locationActivity = meetingTimerActive
             ? null
-            : await _activityForZone(uid, position);
+            : await _activityForLocation(uid, position);
         final nextActivity = meetingTimerActive
             ? ActivityStatus.meeting
-            : (zoneActivity ?? fallback);
+            : (locationActivity ?? fallback);
         _lastNonDriving = nextActivity;
         await UserRepository.instance.updateStatus(
           uid: uid,
@@ -215,78 +212,112 @@ class LocationStatusService {
         );
         return;
       }
+
+      // Avoid a short "not home" flash while two medium-speed samples are
+      // accumulating and the device is about to enter driving mode.
+      if (!_driving && speed >= 5.5) return;
     } else {
       _fastSamples = 0;
       _slowSamples = 0;
       _driving = false;
     }
 
-    if (_zonesEnabled && !_driving && speed >= 0 && speed <= 2.0) {
-      // A manually selected meeting with a timer temporarily takes priority
-      // over home/work/dog-walk zones. "לא בבית" remains manual-only.
-      if (await StatusTimerService.instance.isMeetingTimerActive()) return;
+    if (_driving || (!_zonesEnabled && !_awayEnabled)) return;
 
-      final fallback = await StatusTimerService.instance.resolveActivityReturn(
-        uid,
-        _lastNonDriving,
+    // A manually selected meeting with a timer temporarily takes priority over
+    // all GPS-derived statuses.
+    if (await StatusTimerService.instance.isMeetingTimerActive()) return;
+
+    final fallback = await StatusTimerService.instance.resolveActivityReturn(
+      uid,
+      _lastNonDriving,
+    );
+    if (fallback != _lastNonDriving) {
+      _lastNonDriving = fallback;
+    }
+
+    final locationActivity = await _activityForLocation(uid, position);
+    if (locationActivity != null && locationActivity != _lastNonDriving) {
+      _lastNonDriving = locationActivity;
+      await UserRepository.instance.updateStatus(
+        uid: uid,
+        activity: locationActivity,
       );
-      if (fallback != _lastNonDriving) {
-        _lastNonDriving = fallback;
-      }
-
-      final zoneActivity = await _activityForZone(uid, position);
-      if (zoneActivity != null && zoneActivity != _lastNonDriving) {
-        _lastNonDriving = zoneActivity;
-        await UserRepository.instance.updateStatus(
-          uid: uid,
-          activity: zoneActivity,
-        );
-      }
     }
   }
 
-  Future<ActivityStatus?> _activityForZone(
+  Future<ActivityStatus?> _activityForLocation(
     String uid,
     Position position,
   ) async {
-    if (!_zonesEnabled) return null;
-    return (await _zoneResult(uid, position)).activity;
-  }
-
-  Future<_ZoneResult> _zoneResult(String uid, Position position) async {
     final zones = await UserRepository.instance.getZones(uid);
-    for (final entry in zones.entries) {
-      if (entry.value is! Map) continue;
-      final map = Map<String, dynamic>.from(entry.value as Map);
-      final lat = (map['lat'] as num?)?.toDouble();
-      final lng = (map['lng'] as num?)?.toDouble();
-      final radius = (map['radius'] as num?)?.toDouble() ?? 150;
-      if (lat == null || lng == null) continue;
 
-      final distance = Geolocator.distanceBetween(
-        position.latitude,
-        position.longitude,
-        lat,
-        lng,
-      );
-      if (distance <= radius) {
-        switch (entry.key) {
-          case 'home':
-            return const _ZoneResult(activity: ActivityStatus.home);
-          case 'work':
-            return const _ZoneResult(activity: ActivityStatus.work);
-          case 'dogWalk':
-            return const _ZoneResult(activity: ActivityStatus.dogWalk);
-        }
+    // Always know whether home is configured when "not home" detection is on.
+    // Without a saved home location we cannot safely conclude that the user is
+    // away, so the detector does nothing until home has been saved.
+    final home = _readZone(zones['home']);
+    final isHome = home != null && _inside(position, home);
+
+    if (_zonesEnabled) {
+      // Home wins if zones overlap. Other configured locations then provide a
+      // more useful status than the generic "not home" value.
+      if (isHome) return ActivityStatus.home;
+
+      final work = _readZone(zones['work']);
+      if (work != null && _inside(position, work)) {
+        return ActivityStatus.work;
       }
+
+      final hobby = _readZone(zones['hobby']);
+      if (hobby != null && _inside(position, hobby)) {
+        return ActivityStatus.hobby;
+      }
+
+      final dogWalk = _readZone(zones['dogWalk']);
+      if (dogWalk != null && _inside(position, dogWalk)) {
+        return ActivityStatus.dogWalk;
+      }
+    } else if (_awayEnabled && isHome) {
+      // "Not home" can operate independently from the other named zones.
+      return ActivityStatus.home;
     }
 
-    return const _ZoneResult(activity: null);
+    if (_awayEnabled && home != null && !isHome) {
+      return ActivityStatus.away;
+    }
+
+    return null;
+  }
+
+  _SavedZone? _readZone(dynamic raw) {
+    if (raw is! Map) return null;
+    final map = Map<String, dynamic>.from(raw);
+    final lat = (map['lat'] as num?)?.toDouble();
+    final lng = (map['lng'] as num?)?.toDouble();
+    final radius = (map['radius'] as num?)?.toDouble() ?? 150;
+    if (lat == null || lng == null) return null;
+    return _SavedZone(lat: lat, lng: lng, radius: radius);
+  }
+
+  bool _inside(Position position, _SavedZone zone) {
+    final distance = Geolocator.distanceBetween(
+      position.latitude,
+      position.longitude,
+      zone.lat,
+      zone.lng,
+    );
+    return distance <= zone.radius;
   }
 }
 
-class _ZoneResult {
-  const _ZoneResult({required this.activity});
+class _SavedZone {
+  const _SavedZone({
+    required this.lat,
+    required this.lng,
+    required this.radius,
+  });
 
-  final ActivityStatus? activity;
+  final double lat;
+  final double lng;
+  final double radius;
 }
