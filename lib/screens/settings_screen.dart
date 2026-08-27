@@ -327,7 +327,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Column(
               children: [
                 SwitchListTile.adaptive(
-                  value: _automation.allEnabled,
+                  value: _automation.anyEnabled,
                   onChanged: _automationBusy ? null : _setAllAutomation,
                   secondary: const Icon(Icons.auto_awesome_motion_outlined),
                   title: const Text('הפעל / כבה את הכל'),
