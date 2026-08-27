@@ -38,6 +38,8 @@ class NativeStatusSyncProvider : ContentProvider(),
     companion object {
         private const val NATIVE_PREFS = "matzav_automatic_status_v20"
         private const val KEY_ENABLED = "enabled"
+        private const val KEY_CALL_ENABLED = "call_enabled"
+        private const val KEY_SLEEP_ENABLED = "sleep_enabled"
         private const val KEY_CALL_ACTIVE = "call_active"
         private const val KEY_SLEEP_ACTIVE = "sleep_active"
 
@@ -104,12 +106,14 @@ class NativeStatusSyncProvider : ContentProvider(),
     ) {
         val appContext = context?.applicationContext ?: return
 
-        if (key == KEY_ENABLED) {
+        if (key == KEY_ENABLED || key == KEY_SLEEP_ENABLED) {
             NativeSleepScheduler.reconcile(appContext)
         }
 
         if (
             key == KEY_ENABLED ||
+            key == KEY_CALL_ENABLED ||
+            key == KEY_SLEEP_ENABLED ||
             key == KEY_CALL_ACTIVE ||
             key == KEY_SLEEP_ACTIVE
         ) {
@@ -133,9 +137,6 @@ class NativeStatusSyncProvider : ContentProvider(),
         if (previous.isNullOrEmpty()) {
             val hasTimer = data["availabilityTimerEndsAt"] != null
             val value = if (current == "doNotDisturb" && !hasTimer) {
-                // Migration from a build that forced DND without remembering
-                // the previous value. The UI normally creates a timer for a
-                // manually chosen DND, so no timer means canTalk is safest.
                 "canTalk"
             } else {
                 current
@@ -175,10 +176,12 @@ class NativeStatusSyncProvider : ContentProvider(),
         )
 
         val enabled = prefs.getBoolean(KEY_ENABLED, false)
+        val callEnabled = prefs.getBoolean(KEY_CALL_ENABLED, false)
+        val sleepEnabled = prefs.getBoolean(KEY_SLEEP_ENABLED, false)
         val desired = when {
             !enabled -> "none"
-            prefs.getBoolean(KEY_CALL_ACTIVE, false) -> "onCall"
-            prefs.getBoolean(KEY_SLEEP_ACTIVE, false) -> "sleeping"
+            callEnabled && prefs.getBoolean(KEY_CALL_ACTIVE, false) -> "onCall"
+            sleepEnabled && prefs.getBoolean(KEY_SLEEP_ACTIVE, false) -> "sleeping"
             else -> "none"
         }
 
@@ -259,8 +262,6 @@ class NativeStatusSyncProvider : ContentProvider(),
                     restoreBusyAvailability(data, updates)
                 }
             } else {
-                // Keep availability consistent even if activity was changed by
-                // Flutter while the native process was alive.
                 if (isBusyActivity(resultingActivity)) {
                     forceBusyAvailability(data, updates)
                 } else {
@@ -309,6 +310,7 @@ class NativeStatusSyncProvider : ContentProvider(),
 object NativeSleepScheduler {
     private const val PREFS = "matzav_automatic_status_v20"
     private const val KEY_ENABLED = "enabled"
+    private const val KEY_SLEEP_ENABLED = "sleep_enabled"
     private const val KEY_SLEEP_ACTIVE = "sleep_active"
     private const val KEY_SCREEN_OFF_AT = "screen_off_at"
     private const val KEY_SLEEP_API_LAST_EVENT_MS = "sleep_api_last_event_ms"
@@ -326,11 +328,16 @@ object NativeSleepScheduler {
     private val handler = Handler(Looper.getMainLooper())
     private var pendingRunnable: Runnable? = null
 
+    private fun sleepEnabled(prefs: SharedPreferences): Boolean {
+        return prefs.getBoolean(KEY_ENABLED, false) &&
+            prefs.getBoolean(KEY_SLEEP_ENABLED, false)
+    }
+
     fun reconcile(context: Context) {
         val appContext = context.applicationContext
         val prefs = prefs(appContext)
 
-        if (!prefs.getBoolean(KEY_ENABLED, false)) {
+        if (!sleepEnabled(prefs)) {
             removeSleepApiUpdates(appContext)
             setSleepActive(appContext, false)
             prefs.edit()
@@ -363,7 +370,7 @@ object NativeSleepScheduler {
     fun onScreenOff(context: Context) {
         val appContext = context.applicationContext
         val prefs = prefs(appContext)
-        if (!prefs.getBoolean(KEY_ENABLED, false)) return
+        if (!sleepEnabled(prefs)) return
 
         prefs.edit()
             .putLong(KEY_SCREEN_OFF_AT, System.currentTimeMillis())
@@ -374,7 +381,7 @@ object NativeSleepScheduler {
     fun onUserPresent(context: Context) {
         val appContext = context.applicationContext
         val prefs = prefs(appContext)
-        if (!prefs.getBoolean(KEY_ENABLED, false)) return
+        if (!sleepEnabled(prefs)) return
 
         prefs.edit()
             .remove(KEY_SCREEN_OFF_AT)
@@ -388,7 +395,7 @@ object NativeSleepScheduler {
     fun onSleepIntent(context: Context, intent: Intent) {
         val appContext = context.applicationContext
         val prefs = prefs(appContext)
-        if (!prefs.getBoolean(KEY_ENABLED, false)) return
+        if (!sleepEnabled(prefs)) return
         if (!SleepClassifyEvent.hasEvents(intent)) return
 
         val latest = SleepClassifyEvent.extractEvents(intent)
@@ -455,7 +462,8 @@ object NativeSleepScheduler {
 
     private fun evaluateFallback(context: Context) {
         val prefs = prefs(context)
-        if (!prefs.getBoolean(KEY_ENABLED, false)) {
+        if (!sleepEnabled(prefs)) {
+            setSleepActive(context, false)
             cancelFallback(context)
             return
         }
@@ -485,8 +493,6 @@ object NativeSleepScheduler {
         val lastApiEvent = prefs.getLong(KEY_SLEEP_API_LAST_EVENT_MS, 0L)
         val apiIsFresh = lastApiEvent > 0L && now - lastApiEvent < API_FRESH_MS
 
-        // If Google's model has reported recently, trust it and do not let
-        // screen inactivity overrule a fresh classification.
         if (apiIsFresh) {
             scheduleFallback(context)
             return
@@ -504,7 +510,7 @@ object NativeSleepScheduler {
 
     private fun scheduleFallback(context: Context) {
         val prefs = prefs(context)
-        if (!prefs.getBoolean(KEY_ENABLED, false)) return
+        if (!sleepEnabled(prefs)) return
 
         val now = System.currentTimeMillis()
         var screenOffAt = prefs.getLong(KEY_SCREEN_OFF_AT, 0L)
@@ -554,8 +560,10 @@ object NativeSleepScheduler {
 
     private fun setSleepActive(context: Context, active: Boolean) {
         val prefs = prefs(context)
-        if (prefs.getBoolean(KEY_SLEEP_ACTIVE, false) == active) return
-        prefs.edit().putBoolean(KEY_SLEEP_ACTIVE, active).apply()
+        val allowed = sleepEnabled(prefs)
+        val effective = active && allowed
+        if (prefs.getBoolean(KEY_SLEEP_ACTIVE, false) == effective) return
+        prefs.edit().putBoolean(KEY_SLEEP_ACTIVE, effective).apply()
         AutomaticStatusMonitor.onSleepStateChanged(context)
     }
 
