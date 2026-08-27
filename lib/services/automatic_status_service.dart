@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/status_models.dart';
+import 'automation_preferences.dart';
 import 'busy_availability_service.dart';
 import 'status_timer_service.dart';
 import 'user_repository.dart';
@@ -25,6 +26,8 @@ class AutomaticStatusService {
   String? _uid;
   String _currentOverride = 'none';
   bool _handlerInstalled = false;
+  bool _callsEnabled = true;
+  bool _sleepEnabled = true;
 
   bool get overrideActive => _currentOverride != 'none';
 
@@ -43,8 +46,27 @@ class AutomaticStatusService {
     _uid = uid;
     await _ensureHandler();
 
+    final settings = await AutomationPreferences.instance.load();
+    _callsEnabled = settings.calls;
+    _sleepEnabled = settings.sleep;
+
+    if (!settings.nativeEnabled) {
+      try {
+        await _channel.invokeMethod<void>('stopMonitoring');
+      } on MissingPluginException {
+        // Android-only feature.
+      } on PlatformException {
+        // Restore below anyway.
+      }
+      await _applyOverride('none');
+      return;
+    }
+
     try {
-      await _channel.invokeMethod<void>('startMonitoring');
+      await _channel.invokeMethod<void>('startMonitoring', {
+        'callsEnabled': _callsEnabled,
+        'sleepEnabled': _sleepEnabled,
+      });
       final current =
           await _channel.invokeMethod<String>('getCurrentOverride') ?? 'none';
       await _applyOverride(current);
@@ -55,6 +77,8 @@ class AutomaticStatusService {
       // monitoring is unavailable on a particular device.
     }
   }
+
+  Future<void> refresh({required String uid}) => start(uid: uid);
 
   Future<void> stop() async {
     try {
@@ -75,11 +99,11 @@ class AutomaticStatusService {
       return;
     }
 
-    final normalized =
-        next == ActivityStatus.onCall.name ||
-                next == ActivityStatus.sleeping.name
-            ? next
-            : 'none';
+    final normalized = switch (next) {
+      'onCall' when _callsEnabled => ActivityStatus.onCall.name,
+      'sleeping' when _sleepEnabled => ActivityStatus.sleeping.name,
+      _ => 'none',
+    };
 
     final prefs = await SharedPreferences.getInstance();
     final previousOverride =
