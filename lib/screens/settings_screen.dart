@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/status_models.dart';
 import '../services/ads_service.dart';
+import '../services/automation_preferences.dart';
 import '../services/automatic_status_service.dart';
 import '../services/location_status_service.dart';
 import '../services/premium_service.dart';
@@ -48,12 +49,15 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  static const _automationPreferenceKey = 'matzav_automation_enabled_v25';
-
   bool _busy = false;
   bool _loadingZones = true;
-  bool _automationOn = true;
   bool _automationBusy = false;
+  AutomationFeatureSettings _automation = const AutomationFeatureSettings(
+    driving: true,
+    zones: true,
+    calls: true,
+    sleep: true,
+  );
   Map<String, dynamic> _zones = const {};
 
   String get uid => FirebaseAuth.instance.currentUser!.uid;
@@ -65,59 +69,71 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _loadSettingsState() async {
-    final prefs = await SharedPreferences.getInstance();
+    final automation = await AutomationPreferences.instance.load();
     final zones = await UserRepository.instance.getZones(uid);
     if (!mounted) return;
     setState(() {
-      _automationOn = prefs.getBool(_automationPreferenceKey) ?? true;
+      _automation = automation;
       _zones = zones;
       _loadingZones = false;
     });
   }
 
-  Future<void> _setAutomation(bool value) async {
+  Future<void> _applyAutomationSettings(
+    AutomationFeatureSettings settings, {
+    String? message,
+  }) async {
     if (_automationBusy) return;
     setState(() => _automationBusy = true);
 
+    await AutomationPreferences.instance.save(settings);
+    if (mounted) setState(() => _automation = settings);
+
     try {
+      // Native call/sleep overrides are refreshed first. If one of them was
+      // just disabled while active, this restores the real activity before
+      // the location service snapshots its return state.
+      await AutomaticStatusService.instance.refresh(uid: uid);
+
       final snapshot = await UserRepository.instance.profileStream(uid).first;
       final currentActivity = activityFromString(
         snapshot.data()?['activity'] as String?,
       );
-
-      if (value) {
-        await LocationStatusService.instance.start(
-          uid: uid,
-          currentActivity: currentActivity,
-        );
-        await AutomaticStatusService.instance.start(uid: uid);
-      } else {
-        await AutomaticStatusService.instance.stop();
-        await LocationStatusService.instance.disable();
-      }
-
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_automationPreferenceKey, value);
-
-      if (!mounted) return;
-      setState(() => _automationOn = value);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            value
-                ? 'הזיהוי האוטומטי הופעל.'
-                : 'הזיהוי האוטומטי כובה.',
-          ),
-        ),
+      await LocationStatusService.instance.refresh(
+        uid: uid,
+        currentActivity: currentActivity,
       );
+
+      if (!mounted || message == null) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('לא ניתן לשנות את הזיהוי האוטומטי: $e')),
+        SnackBar(
+          content: Text(
+            'ההגדרה נשמרה, אבל לא ניתן להפעיל כרגע את הזיהוי: $e',
+          ),
+        ),
       );
     } finally {
       if (mounted) setState(() => _automationBusy = false);
     }
+  }
+
+  Future<void> _setAllAutomation(bool value) async {
+    await _applyAutomationSettings(
+      AutomationFeatureSettings(
+        driving: value,
+        zones: value,
+        calls: value,
+        sleep: value,
+      ),
+      message: value
+          ? 'כל אפשרויות הזיהוי האוטומטי הופעלו.'
+          : 'כל אפשרויות הזיהוי האוטומטי כובו.',
+    );
   }
 
   Future<void> _saveCurrentLocation(String zone, String label) async {
@@ -189,6 +205,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final masterSubtitle = _automation.allEnabled
+        ? 'כל ארבעת הזיהויים פעילים'
+        : _automation.anyEnabled
+        ? 'חלק מהזיהויים פעילים — אפשר לשלוט בכל אחד בנפרד'
+        : 'כל הזיהויים כבויים';
+
     return Scaffold(
       appBar: AppBar(title: const Text('הגדרות')),
       body: ListView(
@@ -302,36 +324,83 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 8),
           Card(
-            child: SwitchListTile.adaptive(
-              value: _automationOn,
-              onChanged: _automationBusy ? null : _setAutomation,
-              secondary: const Icon(Icons.auto_awesome_motion_outlined),
-              title: const Text('הפעל זיהוי אוטומטי'),
-              subtitle: const Text(
-                'נסיעה לפי GPS + שיחה + שינה + אזורי בית/עבודה/כלב • פועל גם ברקע',
-              ),
+            child: Column(
+              children: [
+                SwitchListTile.adaptive(
+                  value: _automation.allEnabled,
+                  onChanged: _automationBusy ? null : _setAllAutomation,
+                  secondary: const Icon(Icons.auto_awesome_motion_outlined),
+                  title: const Text('הפעל / כבה את הכל'),
+                  subtitle: Text(masterSubtitle),
+                ),
+                const Divider(height: 1),
+                SwitchListTile.adaptive(
+                  value: _automation.driving,
+                  onChanged: _automationBusy
+                      ? null
+                      : (value) => _applyAutomationSettings(
+                            _automation.copyWith(driving: value),
+                          ),
+                  secondary: const Icon(Icons.directions_car_outlined),
+                  title: const Text('זיהוי נהיגה'),
+                  subtitle: const Text(
+                    'משתמש ב־GPS ובמהירות כדי לעבור אוטומטית למצב "בנסיעה".',
+                  ),
+                ),
+                const Divider(height: 1),
+                SwitchListTile.adaptive(
+                  value: _automation.zones,
+                  onChanged: _automationBusy
+                      ? null
+                      : (value) => _applyAutomationSettings(
+                            _automation.copyWith(zones: value),
+                          ),
+                  secondary: const Icon(Icons.home_outlined),
+                  title: const Text('זיהוי בית ואזורים'),
+                  subtitle: const Text(
+                    'מזהה את אזורי הבית, העבודה וטיול הכלב שהוגדרו למטה.',
+                  ),
+                ),
+                const Divider(height: 1),
+                SwitchListTile.adaptive(
+                  value: _automation.calls,
+                  onChanged: _automationBusy
+                      ? null
+                      : (value) => _applyAutomationSettings(
+                            _automation.copyWith(calls: value),
+                          ),
+                  secondary: const Icon(Icons.phone_in_talk_outlined),
+                  title: const Text('זיהוי שיחה'),
+                  subtitle: const Text(
+                    'מזהה שיחת טלפון או VoIP ומציג "בשיחה", בלי לקרוא '
+                    'מספר, יומן שיחות או תוכן שיחה.',
+                  ),
+                ),
+                const Divider(height: 1),
+                SwitchListTile.adaptive(
+                  value: _automation.sleep,
+                  onChanged: _automationBusy
+                      ? null
+                      : (value) => _applyAutomationSettings(
+                            _automation.copyWith(sleep: value),
+                          ),
+                  secondary: const Icon(Icons.bedtime_outlined),
+                  title: const Text('זיהוי שינה'),
+                  subtitle: const Text(
+                    'משתמש ב־Google Sleep API ובחיישני המכשיר; אם המידע '
+                    'לא זמין, מופעל fallback שמרני של חוסר שימוש.',
+                  ),
+                ),
+              ],
             ),
           ),
           const Card(
             child: ListTile(
-              leading: Icon(Icons.phone_in_talk_outlined),
-              title: Text('זיהוי שיחה'),
+              leading: Icon(Icons.do_not_disturb_on_outlined),
+              title: Text('נא לא להפריע בזמן עסוק'),
               subtitle: Text(
-                'פעיל יחד עם "זיהוי אוטומטי". מזהה מצב שמע של שיחת '
-                'טלפון או שיחת VoIP ומציג "בשיחה", בלי לקרוא מספר, '
-                'יומן שיחות או תוכן שיחה.',
-              ),
-              trailing: Icon(Icons.check_circle_outline),
-            ),
-          ),
-          const Card(
-            child: ListTile(
-              leading: Icon(Icons.bedtime_outlined),
-              title: Text('מצב שינה'),
-              subtitle: Text(
-                'מהשעה 22:00: אם הטלפון נשאר נעול/כבוי יותר מ־10 דקות, '
-                'המצב משתנה ל־"ישן". הוא חוזר למצב הקודם בפתיחה הראשונה '
-                'של הטלפון.',
+                'בשינה, בפגישה או בשיחה הזמינות עוברת אוטומטית ל־"נא לא '
+                'להפריע" וחוזרת לערך שהיה לפני כן בסיום.',
               ),
             ),
           ),
@@ -340,8 +409,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               leading: Icon(Icons.directions_walk_outlined),
               title: Text('לא בבית'),
               subtitle: Text(
-                'נוסף כמצב ידני, ובזיהוי אוטומטי הוא משמש כאשר אינך '
-                'באף אחד מהאזורים שהוגדרו.',
+                'מצב "לא בבית" נשאר מצב ידני. זיהוי האזורים משנה למצב '
+                'המתאים רק כאשר נכנסים לאזור שהוגדר.',
               ),
             ),
           ),
@@ -401,9 +470,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Padding(
               padding: EdgeInsets.all(16),
               child: Text(
-                'כאשר "זיהוי אוטומטי" מופעל כאן בהגדרות, Matzav מפעילה '
-                'זיהוי נסיעה ברקע וגם את זיהוי השינה. זיהוי שיחה פועל ללא '
-                'הרשאת טלפון נוספת.',
+                'אפשר להפעיל כל מנגנון זיהוי בנפרד. המתג העליון מפעיל או '
+                'מכבה את ארבעתם יחד. הרשאות Android נדרשות רק לפיצ׳רים '
+                'שהפעלת.',
               ),
             ),
           ),
