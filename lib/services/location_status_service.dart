@@ -2,9 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/status_models.dart';
+import 'automation_preferences.dart';
 import 'automatic_status_service.dart';
 import 'status_timer_service.dart';
 import 'user_repository.dart';
@@ -13,26 +13,20 @@ class LocationStatusService {
   LocationStatusService._();
   static final instance = LocationStatusService._();
 
-  static const _automationPreferenceKey =
-      'automatic_location_status_enabled_v1';
-
   StreamSubscription<Position>? _subscription;
   String? _uid;
   int _fastSamples = 0;
   int _slowSamples = 0;
   bool _driving = false;
+  bool _drivingEnabled = true;
+  bool _zonesEnabled = true;
   ActivityStatus _lastNonDriving = ActivityStatus.home;
 
   bool get running => _subscription != null;
 
   Future<bool> isAutomationEnabled() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getBool(_automationPreferenceKey) ?? false;
-  }
-
-  Future<void> _rememberAutomation(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_automationPreferenceKey, enabled);
+    final settings = await AutomationPreferences.instance.load();
+    return settings.anyEnabled;
   }
 
   void noteManualActivity(ActivityStatus activity) {
@@ -46,13 +40,22 @@ class LocationStatusService {
     required ActivityStatus currentActivity,
     bool remember = true,
   }) async {
+    final featureSettings = await AutomationPreferences.instance.load();
+    _drivingEnabled = featureSettings.driving;
+    _zonesEnabled = featureSettings.zones;
+
+    if (!featureSettings.locationEnabled) {
+      await stop();
+      return;
+    }
+
     if (_subscription != null) {
-      if (remember) await _rememberAutomation(true);
+      _uid = uid;
       return;
     }
 
     _uid = uid;
-    _driving = currentActivity == ActivityStatus.driving;
+    _driving = _drivingEnabled && currentActivity == ActivityStatus.driving;
     if (currentActivity != ActivityStatus.driving) {
       _lastNonDriving = currentActivity;
     }
@@ -71,15 +74,25 @@ class LocationStatusService {
 
     final LocationSettings settings;
     if (defaultTargetPlatform == TargetPlatform.android) {
+      final title = _drivingEnabled && _zonesEnabled
+          ? 'Matzav – זיהוי מיקום פעיל'
+          : _drivingEnabled
+          ? 'Matzav – זיהוי נסיעה פעיל'
+          : 'Matzav – זיהוי אזורים פעיל';
+      final text = _drivingEnabled && _zonesEnabled
+          ? 'Matzav משתמשת במיקום כדי לזהות נסיעה ואזורים שהוגדרו.'
+          : _drivingEnabled
+          ? 'Matzav בודקת מהירות כדי לעדכן אוטומטית את הסטטוס.'
+          : 'Matzav בודקת אם נכנסת לאזור בית/עבודה/כלב שהוגדר.';
+
       settings = AndroidSettings(
         accuracy: LocationAccuracy.high,
         distanceFilter: 5,
         intervalDuration: const Duration(seconds: 5),
-        foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationTitle: 'Matzav – זיהוי נסיעה פעיל',
-          notificationText:
-              'Matzav בודקת מהירות כדי לעדכן אוטומטית את הסטטוס גם ברקע.',
-          notificationChannelName: 'זיהוי נסיעה אוטומטי',
+        foregroundNotificationConfig: ForegroundNotificationConfig(
+          notificationTitle: title,
+          notificationText: text,
+          notificationChannelName: 'זיהוי מיקום אוטומטי',
           setOngoing: true,
           enableWakeLock: false,
           enableWifiLock: false,
@@ -102,8 +115,18 @@ class LocationStatusService {
             _subscription = null;
           },
         );
+  }
 
-    if (remember) await _rememberAutomation(true);
+  Future<void> refresh({
+    required String uid,
+    required ActivityStatus currentActivity,
+  }) async {
+    await stop();
+    await start(
+      uid: uid,
+      currentActivity: currentActivity,
+      remember: false,
+    );
   }
 
   Future<void> stop({bool rememberOff = false}) async {
@@ -113,7 +136,6 @@ class LocationStatusService {
     _fastSamples = 0;
     _slowSamples = 0;
     _driving = false;
-    if (rememberOff) await _rememberAutomation(false);
   }
 
   Future<void> disable() => stop(rememberOff: true);
@@ -125,60 +147,67 @@ class LocationStatusService {
     // Phone-call and sleep overrides take priority over location automation.
     if (AutomaticStatusService.instance.overrideActive) return;
 
-    // Position.speed is meters/second.
-    // >= 8.3 m/s is ~30 km/h: a single reading is enough to react quickly.
-    // >= 5.5 m/s is ~20 km/h: require two consecutive readings.
     final speed = position.speed;
-    if (speed >= 8.3) {
-      _fastSamples = 2;
-      _slowSamples = 0;
-    } else if (speed >= 5.5) {
-      _fastSamples++;
-      _slowSamples = 0;
-    } else if (speed >= 0 && speed <= 2.0) {
-      _slowSamples++;
-      _fastSamples = 0;
+
+    if (_drivingEnabled) {
+      // Position.speed is meters/second.
+      // >= 8.3 m/s is ~30 km/h: a single reading is enough to react quickly.
+      // >= 5.5 m/s is ~20 km/h: require two consecutive readings.
+      if (speed >= 8.3) {
+        _fastSamples = 2;
+        _slowSamples = 0;
+      } else if (speed >= 5.5) {
+        _fastSamples++;
+        _slowSamples = 0;
+      } else if (speed >= 0 && speed <= 2.0) {
+        _slowSamples++;
+        _fastSamples = 0;
+      } else {
+        _fastSamples = 0;
+        _slowSamples = 0;
+      }
+
+      if (!_driving && _fastSamples >= 2) {
+        _driving = true;
+        await UserRepository.instance.updateStatus(
+          uid: uid,
+          activity: ActivityStatus.driving,
+        );
+        return;
+      }
+
+      // With a 5-second Android interval, three slow samples means roughly
+      // 15 seconds stopped before leaving driving mode.
+      if (_driving && _slowSamples >= 3) {
+        _driving = false;
+        final fallback = await StatusTimerService.instance.resolveActivityReturn(
+          uid,
+          _lastNonDriving,
+        );
+        final meetingTimerActive = await StatusTimerService.instance
+            .isMeetingTimerActive();
+        final zoneActivity = meetingTimerActive || !_zonesEnabled
+            ? null
+            : await _activityForZone(uid, position);
+        final nextActivity = meetingTimerActive
+            ? ActivityStatus.meeting
+            : (zoneActivity ?? fallback);
+        _lastNonDriving = nextActivity;
+        await UserRepository.instance.updateStatus(
+          uid: uid,
+          activity: nextActivity,
+        );
+        return;
+      }
     } else {
       _fastSamples = 0;
       _slowSamples = 0;
-    }
-
-    if (!_driving && _fastSamples >= 2) {
-      _driving = true;
-      await UserRepository.instance.updateStatus(
-        uid: uid,
-        activity: ActivityStatus.driving,
-      );
-      return;
-    }
-
-    // With a 5-second Android interval, three slow samples means roughly
-    // 15 seconds stopped before leaving driving mode.
-    if (_driving && _slowSamples >= 3) {
       _driving = false;
-      final fallback = await StatusTimerService.instance.resolveActivityReturn(
-        uid,
-        _lastNonDriving,
-      );
-      final meetingTimerActive = await StatusTimerService.instance
-          .isMeetingTimerActive();
-      final zoneActivity = meetingTimerActive
-          ? null
-          : await _activityForZone(uid, position);
-      final nextActivity = meetingTimerActive
-          ? ActivityStatus.meeting
-          : (zoneActivity ?? fallback);
-      _lastNonDriving = nextActivity;
-      await UserRepository.instance.updateStatus(
-        uid: uid,
-        activity: nextActivity,
-      );
-      return;
     }
 
-    if (!_driving && speed >= 0 && speed <= 2.0) {
+    if (_zonesEnabled && !_driving && speed >= 0 && speed <= 2.0) {
       // A manually selected meeting with a timer temporarily takes priority
-      // over home/work/dog-walk geofences. "לא בבית" remains manual-only.
+      // over home/work/dog-walk zones. "לא בבית" remains manual-only.
       if (await StatusTimerService.instance.isMeetingTimerActive()) return;
 
       final fallback = await StatusTimerService.instance.resolveActivityReturn(
@@ -204,6 +233,7 @@ class LocationStatusService {
     String uid,
     Position position,
   ) async {
+    if (!_zonesEnabled) return null;
     return (await _zoneResult(uid, position)).activity;
   }
 
