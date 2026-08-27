@@ -55,6 +55,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   AutomationFeatureSettings _automation = const AutomationFeatureSettings(
     driving: true,
     zones: true,
+    away: true,
     calls: true,
     sleep: true,
   );
@@ -127,6 +128,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       AutomationFeatureSettings(
         driving: value,
         zones: value,
+        away: value,
         calls: value,
         sleep: value,
       ),
@@ -206,7 +208,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final masterSubtitle = _automation.allEnabled
-        ? 'כל ארבעת הזיהויים פעילים'
+        ? 'כל חמשת הזיהויים פעילים'
         : _automation.anyEnabled
         ? 'חלק מהזיהויים פעילים — אפשר לשלוט בכל אחד בנפרד'
         : 'כל הזיהויים כבויים';
@@ -355,10 +357,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       : (value) => _applyAutomationSettings(
                             _automation.copyWith(zones: value),
                           ),
-                  secondary: const Icon(Icons.home_outlined),
+                  secondary: const Icon(Icons.place_outlined),
                   title: const Text('זיהוי בית ואזורים'),
                   subtitle: const Text(
-                    'מזהה את אזורי הבית, העבודה וטיול הכלב שהוגדרו למטה.',
+                    'מזהה את אזורי הבית, העבודה, התחביב וטיול הכלב שהוגדרו למטה.',
+                  ),
+                ),
+                const Divider(height: 1),
+                SwitchListTile.adaptive(
+                  value: _automation.away,
+                  onChanged: _automationBusy
+                      ? null
+                      : (value) => _applyAutomationSettings(
+                            _automation.copyWith(away: value),
+                          ),
+                  secondary: const Icon(Icons.directions_walk_outlined),
+                  title: const Text('זיהוי לא בבית'),
+                  subtitle: const Text(
+                    'כאשר מיקום הבית מוגדר, GPS מעביר אוטומטית ל־"לא בבית" '
+                    'כשנמצאים מחוץ לבית. אזור עבודה/תחביב/כלב מקבל עדיפות '
+                    'אם זיהוי האזורים פעיל.',
                   ),
                 ),
                 const Divider(height: 1),
@@ -404,16 +422,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
-          const Card(
-            child: ListTile(
-              leading: Icon(Icons.directions_walk_outlined),
-              title: Text('לא בבית'),
-              subtitle: Text(
-                'מצב "לא בבית" נשאר מצב ידני. זיהוי האזורים משנה למצב '
-                'המתאים רק כאשר נכנסים לאזור שהוגדר.',
-              ),
-            ),
-          ),
           const SizedBox(height: 16),
           Text(
             'אוטומציה לפי מיקום',
@@ -423,8 +431,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 8),
           const Text(
-            'עמוד על המקום הרצוי ולחץ שמירה. כאן ניתן גם לראות אם כבר '
-            'הוגדר מיקום ואת הקואורדינטות שנשמרו.',
+            'עמוד על המקום הרצוי ולחץ שמירה. "תחביב" יכול להיות מגרש '
+            'טניס, מגרש כדורגל, חדר כושר, חוג או כל מקום קבוע אחר.',
           ),
           const SizedBox(height: 16),
           if (_loadingZones)
@@ -449,6 +457,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   : () => _saveCurrentLocation('work', 'העבודה'),
             ),
             _ZoneTile(
+              icon: Icons.favorite_outline,
+              title: 'מיקום התחביב שלי',
+              subtitle: _zoneSubtitle('hobby'),
+              configured: _zoneConfigured('hobby'),
+              onTap: _busy
+                  ? null
+                  : () => _saveCurrentLocation('hobby', 'מיקום התחביב'),
+            ),
+            _ZoneTile(
               icon: Icons.pets_outlined,
               title: 'אזור טיול עם הכלב',
               subtitle: _zoneSubtitle('dogWalk'),
@@ -471,8 +488,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               padding: EdgeInsets.all(16),
               child: Text(
                 'אפשר להפעיל כל מנגנון זיהוי בנפרד. המתג העליון מפעיל או '
-                'מכבה את ארבעתם יחד. הרשאות Android נדרשות רק לפיצ׳רים '
-                'שהפעלת.',
+                'מכבה את חמשתם יחד. זיהוי "לא בבית" דורש שמיקום הבית '
+                'יהיה שמור.',
               ),
             ),
           ),
