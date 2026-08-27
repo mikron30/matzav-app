@@ -41,7 +41,20 @@ class PhoneStateReceiver : BroadcastReceiver() {
         val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE) ?: return
         val active = when (state) {
             TelephonyManager.EXTRA_STATE_OFFHOOK -> true
-            TelephonyManager.EXTRA_STATE_IDLE -> false
+            TelephonyManager.EXTRA_STATE_IDLE -> {
+                // On dual-SIM devices one subscription may become IDLE while a
+                // call on the other subscription is still active. Query the
+                // aggregate device call state before clearing Matzav's status.
+                try {
+                    @Suppress("DEPRECATION")
+                    val manager = appContext.getSystemService(
+                        Context.TELEPHONY_SERVICE,
+                    ) as TelephonyManager
+                    manager.callState == TelephonyManager.CALL_STATE_OFFHOOK
+                } catch (_: Exception) {
+                    false
+                }
+            }
             // Ringing by itself is not yet an active conversation. If another
             // call is already active (call waiting), leave the current value as-is.
             TelephonyManager.EXTRA_STATE_RINGING -> return
