@@ -33,6 +33,8 @@ class MainActivity : FlutterActivity() {
     private var pendingCallResult: MethodChannel.Result? = null
     private var pendingCallPhone: String? = null
     private var pendingAutomaticStatusResult: MethodChannel.Result? = null
+    private var pendingAutomaticCallsEnabled = true
+    private var pendingAutomaticSleepEnabled = true
     private var automaticStatusChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -71,7 +73,17 @@ class MainActivity : FlutterActivity() {
         )
         automaticStatusChannel!!.setMethodCallHandler { call, result ->
             when (call.method) {
-                "startMonitoring" -> startAutomaticMonitoring(result)
+                "startMonitoring" -> {
+                    val callsEnabled =
+                        call.argument<Boolean>("callsEnabled") ?: true
+                    val sleepEnabled =
+                        call.argument<Boolean>("sleepEnabled") ?: true
+                    startAutomaticMonitoring(
+                        callsEnabled,
+                        sleepEnabled,
+                        result,
+                    )
+                }
                 "stopMonitoring" -> {
                     AutomaticStatusMonitor.stop(applicationContext)
                     result.success(null)
@@ -88,10 +100,14 @@ class MainActivity : FlutterActivity() {
         AutomaticStatusMonitor.attachChannel(automaticStatusChannel!!)
     }
 
-    private fun missingAutomaticPermissions(): Array<String> {
+    private fun missingAutomaticPermissions(
+        callsEnabled: Boolean,
+        sleepEnabled: Boolean,
+    ): Array<String> {
         val missing = mutableListOf<String>()
 
         if (
+            callsEnabled &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
             checkSelfPermission(Manifest.permission.READ_PHONE_STATE) !=
             PackageManager.PERMISSION_GRANTED
@@ -100,6 +116,7 @@ class MainActivity : FlutterActivity() {
         }
 
         if (
+            sleepEnabled &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
             checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) !=
             PackageManager.PERMISSION_GRANTED
@@ -110,8 +127,18 @@ class MainActivity : FlutterActivity() {
         return missing.toTypedArray()
     }
 
-    private fun startAutomaticMonitoring(result: MethodChannel.Result) {
-        val missing = missingAutomaticPermissions()
+    private fun startAutomaticMonitoring(
+        callsEnabled: Boolean,
+        sleepEnabled: Boolean,
+        result: MethodChannel.Result,
+    ) {
+        if (!callsEnabled && !sleepEnabled) {
+            AutomaticStatusMonitor.stop(applicationContext)
+            result.success(null)
+            return
+        }
+
+        val missing = missingAutomaticPermissions(callsEnabled, sleepEnabled)
         if (missing.isNotEmpty()) {
             if (pendingAutomaticStatusResult != null) {
                 result.error(
@@ -122,6 +149,8 @@ class MainActivity : FlutterActivity() {
                 return
             }
             pendingAutomaticStatusResult = result
+            pendingAutomaticCallsEnabled = callsEnabled
+            pendingAutomaticSleepEnabled = sleepEnabled
             requestPermissions(missing, AUTOMATIC_PERMISSION_REQUEST_CODE)
             return
         }
@@ -129,6 +158,8 @@ class MainActivity : FlutterActivity() {
         AutomaticStatusMonitor.start(
             applicationContext,
             automaticStatusChannel!!,
+            callsEnabled,
+            sleepEnabled,
         )
         result.success(null)
     }
@@ -183,12 +214,14 @@ class MainActivity : FlutterActivity() {
             val result = pendingAutomaticStatusResult ?: return
             pendingAutomaticStatusResult = null
 
-            // Automatic detection still starts when one permission is denied.
-            // Phone calls fall back to AudioManager and sleep falls back to a
-            // conservative screen-idle rule if Activity Recognition is absent.
+            // Automatic detection still starts when a permission is denied.
+            // Calls fall back to AudioManager and sleep falls back to the
+            // conservative idle rule when Activity Recognition is absent.
             AutomaticStatusMonitor.start(
                 applicationContext,
                 automaticStatusChannel!!,
+                pendingAutomaticCallsEnabled,
+                pendingAutomaticSleepEnabled,
             )
             result.success(null)
             return
@@ -289,12 +322,13 @@ class MainActivity : FlutterActivity() {
  * 2. AudioManager communication mode for VoIP/WhatsApp/etc.
  *
  * Sleep state is produced by NativeSleepScheduler using Google's Sleep API
- * with a conservative idle fallback. Neither detector reads phone numbers,
- * call logs, audio content, or message content.
+ * with a conservative idle fallback. Each detector can be enabled separately.
  */
 object AutomaticStatusMonitor {
     private const val PREFS = "matzav_automatic_status_v20"
     private const val KEY_ENABLED = "enabled"
+    private const val KEY_CALL_ENABLED = "call_enabled"
+    private const val KEY_SLEEP_ENABLED = "sleep_enabled"
     private const val KEY_CALL_ACTIVE = "call_active"
     private const val KEY_SLEEP_ACTIVE = "sleep_active"
     private const val CALL_STATE_POLL_MS = 2000L
@@ -313,17 +347,36 @@ object AutomaticStatusMonitor {
         channel = newChannel
     }
 
-    fun start(context: Context, newChannel: MethodChannel) {
+    fun start(
+        context: Context,
+        newChannel: MethodChannel,
+        callsEnabled: Boolean,
+        sleepEnabled: Boolean,
+    ) {
         channel = newChannel
         val appContext = context.applicationContext
-        prefs(appContext).edit().putBoolean(KEY_ENABLED, true).apply()
+        val enabled = callsEnabled || sleepEnabled
+        prefs(appContext).edit()
+            .putBoolean(KEY_ENABLED, enabled)
+            .putBoolean(KEY_CALL_ENABLED, callsEnabled)
+            .putBoolean(KEY_SLEEP_ENABLED, sleepEnabled)
+            .apply()
 
-        startAudioMonitoring(appContext)
-        startPhoneCallMonitoring(appContext)
+        if (callsEnabled) {
+            startAudioMonitoring(appContext)
+            startPhoneCallMonitoring(appContext)
+            updateCallStateFromAudio(appContext)
+            updateCallStateFromPhone(appContext)
+        } else {
+            stopAudioMonitoring()
+            stopPhoneCallMonitoring()
+            prefs(appContext).edit().putBoolean(KEY_CALL_ACTIVE, false).apply()
+        }
+
+        if (!sleepEnabled) {
+            prefs(appContext).edit().putBoolean(KEY_SLEEP_ACTIVE, false).apply()
+        }
         NativeSleepScheduler.reconcile(appContext)
-
-        updateCallStateFromAudio(appContext)
-        updateCallStateFromPhone(appContext)
         emitCurrentOverride(appContext)
     }
 
@@ -331,6 +384,8 @@ object AutomaticStatusMonitor {
         val appContext = context.applicationContext
         prefs(appContext).edit()
             .putBoolean(KEY_ENABLED, false)
+            .putBoolean(KEY_CALL_ENABLED, false)
+            .putBoolean(KEY_SLEEP_ENABLED, false)
             .putBoolean(KEY_CALL_ACTIVE, false)
             .putBoolean(KEY_SLEEP_ACTIVE, false)
             .apply()
@@ -344,8 +399,10 @@ object AutomaticStatusMonitor {
     fun currentOverride(context: Context): String {
         val prefs = prefs(context.applicationContext)
         return when {
-            prefs.getBoolean(KEY_CALL_ACTIVE, false) -> "onCall"
-            prefs.getBoolean(KEY_SLEEP_ACTIVE, false) -> "sleeping"
+            prefs.getBoolean(KEY_CALL_ENABLED, false) &&
+                prefs.getBoolean(KEY_CALL_ACTIVE, false) -> "onCall"
+            prefs.getBoolean(KEY_SLEEP_ENABLED, false) &&
+                prefs.getBoolean(KEY_SLEEP_ACTIVE, false) -> "sleeping"
             else -> "none"
         }
     }
@@ -478,7 +535,16 @@ object AutomaticStatusMonitor {
 
     private fun updateCombinedCallState(context: Context) {
         val prefs = prefs(context)
-        if (!prefs.getBoolean(KEY_ENABLED, false)) return
+        if (
+            !prefs.getBoolean(KEY_ENABLED, false) ||
+            !prefs.getBoolean(KEY_CALL_ENABLED, false)
+        ) {
+            if (prefs.getBoolean(KEY_CALL_ACTIVE, false)) {
+                prefs.edit().putBoolean(KEY_CALL_ACTIVE, false).apply()
+                emitCurrentOverride(context)
+            }
+            return
+        }
 
         val active = audioCallActive || phoneCallActive
         if (prefs.getBoolean(KEY_CALL_ACTIVE, false) == active) return
