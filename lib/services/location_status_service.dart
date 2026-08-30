@@ -91,7 +91,10 @@ class LocationStatusService {
               'זיהוי פעיל: ${activeParts.join(' + ')}. Matzav משתמשת ב־GPS לעדכון הסטטוס.',
           notificationChannelName: 'זיהוי מיקום אוטומטי',
           setOngoing: true,
-          enableWakeLock: false,
+          // Keep the CPU available for background GPS processing. Without this,
+          // some devices become very aggressive when the screen is off and the
+          // Flutter location stream can appear to stop for long periods.
+          enableWakeLock: true,
           enableWifiLock: false,
         ),
       );
@@ -104,14 +107,32 @@ class LocationStatusService {
 
     _fastSamples = 0;
     _slowSamples = 0;
+
     _subscription = Geolocator.getPositionStream(locationSettings: settings)
         .listen(
           _handlePosition,
-          onError: (_) {
-            _subscription?.cancel();
-            _subscription = null;
-          },
+          // Do not cancel the entire automatic-location service on one
+          // transient provider/GPS error. The previous code did that, leaving
+          // driving/home/away detection dead until the app was restarted.
+          onError: (_) {},
         );
+
+    // Evaluate immediately as well. This makes home/away react when automation
+    // starts instead of waiting for the first streaming update to arrive.
+    unawaited(_evaluateCurrentPosition());
+  }
+
+  Future<void> _evaluateCurrentPosition() async {
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+        ),
+      );
+      await _handlePosition(position);
+    } catch (_) {
+      // The continuous stream remains active and may recover on its own.
+    }
   }
 
   Future<void> refresh({
@@ -158,7 +179,9 @@ class LocationStatusService {
     if (uid == null) return;
 
     // Phone-call and sleep overrides take priority over location automation.
-    if (AutomaticStatusService.instance.overrideActive) return;
+    // Ask Android for the current value instead of trusting a possibly stale
+    // Flutter-side cache left over from a call that already ended in background.
+    if (await AutomaticStatusService.instance.isOverrideActiveNow()) return;
 
     final speed = position.speed;
 
