@@ -31,6 +31,27 @@ class AutomaticStatusService {
 
   bool get overrideActive => _currentOverride != 'none';
 
+  /// Reads the current native call/sleep override before location automation
+  /// decides whether it may publish a GPS-derived status. This prevents a stale
+  /// Flutter-side value from permanently blocking driving/home/away detection
+  /// after Android has already ended a call or sleep override in the background.
+  Future<bool> isOverrideActiveNow() async {
+    try {
+      final current =
+          await _channel.invokeMethod<String>('getCurrentOverride') ?? 'none';
+      _currentOverride = switch (current) {
+        'onCall' when _callsEnabled => ActivityStatus.onCall.name,
+        'sleeping' when _sleepEnabled => ActivityStatus.sleeping.name,
+        _ => 'none',
+      };
+    } on MissingPluginException {
+      // Android-only feature. Keep the last known state on other platforms.
+    } on PlatformException {
+      // Keep the last known state if the native side is temporarily unavailable.
+    }
+    return overrideActive;
+  }
+
   Future<void> _ensureHandler() async {
     if (_handlerInstalled) return;
     _handlerInstalled = true;
