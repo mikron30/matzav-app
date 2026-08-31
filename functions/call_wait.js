@@ -133,7 +133,6 @@ exports.notifyCallWaiters = onDocumentUpdated(
             priority: "high",
             notification: {
               sound: "default",
-              channelId: "matzav_call_wait",
             },
           },
           apns: {
