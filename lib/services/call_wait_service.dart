@@ -13,7 +13,7 @@ class CallWaitService {
 
   StreamSubscription<String>? _tokenSubscription;
   StreamSubscription<RemoteMessage>? _messageSubscription;
-  final Map<String, StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>>>
+  final Map<String, StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>>
       _callEndSubscriptions = {};
   final Map<String, DateTime> _lastCallEndNotice = {};
   String? _uid;
@@ -112,9 +112,6 @@ class CallWaitService {
         'requesterUid': requesterUid,
         'targetUid': targetUid,
         'targetName': targetName,
-        // Store the exact token that was verified when the user tapped the
-        // button. The Cloud Function still falls back to private_users, but
-        // this removes a separate lookup/race from the normal delivery path.
         'fcmToken': token,
         'deliveryStatus': 'waiting',
         'createdAt': FieldValue.serverTimestamp(),
@@ -143,10 +140,6 @@ class CallWaitService {
             return;
           }
 
-          // This is an in-app fallback in addition to FCM. It makes the result
-          // visible immediately when Matzav is open even if push delivery is
-          // delayed or rejected by the device. The transaction above already
-          // verified onCall, so the first non-onCall snapshot is meaningful.
           if (sawActiveCall || snapshot.exists) {
             _emitCallFinishedOnce(targetUid, '$targetName סיים/ה את השיחה');
             unawaited(_callEndSubscriptions.remove(targetUid)?.cancel());
@@ -160,7 +153,8 @@ class CallWaitService {
     final dedupeKey = targetUid.isEmpty ? message : targetUid;
     final now = DateTime.now();
     final previous = _lastCallEndNotice[dedupeKey];
-    if (previous != null && now.difference(previous) < const Duration(seconds: 15)) {
+    if (previous != null &&
+        now.difference(previous) < const Duration(seconds: 15)) {
       return;
     }
     _lastCallEndNotice[dedupeKey] = now;
