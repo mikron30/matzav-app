@@ -958,11 +958,7 @@ class _FriendTileState extends State<_FriendTile> {
           onTap: () => _callFriend(context, name),
           leading: _FriendAvatar(name: name, contactPhoto: contactPhoto),
           title: Text(name),
-          subtitle: Text(
-            _phoneNumber == null
-                ? 'עדיין לא התקין/ה את האפליקציה'
-                : 'עדיין לא התקין/ה את האפליקציה • לחץ להתקשר',
-          ),
+          subtitle: const Text('עדיין לא התקין/ה את האפליקציה'),
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -991,11 +987,7 @@ class _FriendTileState extends State<_FriendTile> {
               onTap: () => _callFriend(context, name),
               leading: _FriendAvatar(name: name, contactPhoto: contactPhoto),
               title: Text(name),
-              subtitle: Text(
-                _phoneNumber == null
-                    ? 'טוען מצב...'
-                    : 'טוען מצב... • לחץ להתקשר',
-              ),
+              subtitle: const Text('טוען מצב...'),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -1034,11 +1026,7 @@ class _FriendTileState extends State<_FriendTile> {
             subtitle: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  _phoneNumber == null
-                      ? '${activity.label}  •  ${availability.label}'
-                      : '${activity.label}  •  ${availability.label}  •  לחץ להתקשר',
-                ),
+                Text('${activity.label}  •  ${availability.label}'),
                 if (activityTimerEnd != null)
                   Text(
                     '⏱ פגישה ${_timerText(activityTimerEnd)}',
