@@ -17,7 +17,6 @@ onInit(() => {
 });
 
 function firestoreDb() {
-  // Defensive fallback for local/emulator execution.
   if (admin.apps.length === 0) {
     admin.initializeApp();
   }
@@ -44,14 +43,125 @@ async function sendWithRetry(message, attempts = 3) {
   throw lastError;
 }
 
+async function notifyWaiters({
+  database,
+  collection,
+  targetUid,
+  targetName,
+  type,
+  body,
+  logLabel,
+}) {
+  const waitersRef = database
+    .collection(collection)
+    .doc(targetUid)
+    .collection("waiters");
+
+  const waiters = await waitersRef.get();
+  if (waiters.empty) {
+    logger.info(`${logLabel} with no waiters`, {targetUid});
+    return;
+  }
+
+  const jobs = waiters.docs.map(async (waiterDoc) => {
+    const waiterUid = waiterDoc.id;
+    const waiterData = waiterDoc.data() || {};
+    const requestedName =
+      String(waiterData.targetName || targetName).trim() || targetName;
+
+    try {
+      // Store the token at button-press time, while keeping the private-user
+      // lookup as a fallback for older builds or refreshed waiter documents.
+      let token = waiterData.fcmToken;
+      if (typeof token !== "string" || token.length === 0) {
+        const privateUser = await database
+          .collection("private_users")
+          .doc(waiterUid)
+          .get();
+        token = privateUser.data()?.fcmToken;
+      }
+
+      if (typeof token !== "string" || token.length === 0) {
+        logger.warn(`No FCM token for ${logLabel} waiter`, {
+          waiterUid,
+          targetUid,
+        });
+        await waiterDoc.ref.set(
+          {
+            deliveryStatus: "failed",
+            deliveryError: "missing_fcm_token",
+            lastDeliveryAttemptAt:
+              admin.firestore.FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+        return;
+      }
+
+      const messageId = await sendWithRetry({
+        token,
+        notification: {
+          title: "Matzav",
+          body: body(requestedName),
+        },
+        data: {
+          type,
+          targetUid,
+          targetName: requestedName,
+        },
+        android: {
+          priority: "high",
+          notification: {
+            sound: "default",
+          },
+        },
+        apns: {
+          payload: {
+            aps: {
+              sound: "default",
+            },
+          },
+        },
+      });
+
+      logger.info(`${logLabel} notification accepted by FCM`, {
+        waiterUid,
+        targetUid,
+        messageId,
+      });
+
+      // One request = one successful notification opportunity.
+      await waiterDoc.ref.delete();
+    } catch (error) {
+      const errorText = error?.message || String(error);
+      logger.error(`Failed to notify ${logLabel} waiter`, {
+        waiterUid,
+        targetUid,
+        error: errorText,
+        code: error?.code,
+      });
+
+      // Keep failed requests with diagnostics instead of silently losing them.
+      await waiterDoc.ref.set(
+        {
+          deliveryStatus: "failed",
+          deliveryError: errorText.slice(0, 500),
+          deliveryErrorCode: error?.code || null,
+          lastDeliveryAttemptAt:
+            admin.firestore.FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      ).catch(() => {});
+    }
+  });
+
+  await Promise.all(jobs);
+}
+
 /**
- * One-shot wait:
- * When a user explicitly taps "wait for call to end" for a friend whose
- * activity is onCall, a waiter document is created.
- *
- * When the target profile leaves activity=onCall, send an FCM push to all
- * waiters. A waiter is deleted only after Firebase accepts the push. Failed
- * deliveries stay in Firestore with diagnostics instead of disappearing.
+ * One profile-update trigger serves both one-shot status notifications:
+ *   1) onCall -> anything else: notify call-end waiters.
+ *   2) anything except driving -> driving: notify driving-start waiters.
  */
 exports.notifyCallWaiters = onDocumentUpdated(
   {
@@ -62,8 +172,12 @@ exports.notifyCallWaiters = onDocumentUpdated(
     const before = event.data?.before?.data() || {};
     const after = event.data?.after?.data() || {};
 
-    // Only react to the transition: onCall -> anything else.
-    if (before.activity !== "onCall" || after.activity === "onCall") {
+    const callEnded =
+      before.activity === "onCall" && after.activity !== "onCall";
+    const drivingStarted =
+      before.activity !== "driving" && after.activity === "driving";
+
+    if (!callEnded && !drivingStarted) {
       return;
     }
 
@@ -71,109 +185,37 @@ exports.notifyCallWaiters = onDocumentUpdated(
     const targetName =
       String(after.displayName || before.displayName || "החבר").trim() ||
       "החבר";
-
     const database = firestoreDb();
-    const waitersRef = database
-      .collection("call_waits")
-      .doc(targetUid)
-      .collection("waiters");
 
-    const waiters = await waitersRef.get();
-    if (waiters.empty) {
-      logger.info("Call ended with no waiters", {targetUid});
-      return;
+    const jobs = [];
+
+    if (callEnded) {
+      jobs.push(
+        notifyWaiters({
+          database,
+          collection: "call_waits",
+          targetUid,
+          targetName,
+          type: "call_finished",
+          body: (name) => `${name} סיים/ה את השיחה`,
+          logLabel: "call-end",
+        }),
+      );
     }
 
-    const jobs = waiters.docs.map(async (waiterDoc) => {
-      const waiterUid = waiterDoc.id;
-      const waiterData = waiterDoc.data() || {};
-      const requestedName =
-        String(waiterData.targetName || targetName).trim() || targetName;
-
-      try {
-        // v37 stores the exact token that was verified at button press time.
-        // Keep the private-user lookup as a fallback for older installed builds.
-        let token = waiterData.fcmToken;
-        if (typeof token !== "string" || token.length === 0) {
-          const privateUser = await database
-            .collection("private_users")
-            .doc(waiterUid)
-            .get();
-          token = privateUser.data()?.fcmToken;
-        }
-
-        if (typeof token !== "string" || token.length === 0) {
-          logger.warn("No FCM token for call waiter", {
-            waiterUid,
-            targetUid,
-          });
-          await waiterDoc.ref.set(
-            {
-              deliveryStatus: "failed",
-              deliveryError: "missing_fcm_token",
-              lastDeliveryAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
-            },
-            {merge: true},
-          );
-          return;
-        }
-
-        const messageId = await sendWithRetry({
-          token,
-          notification: {
-            title: "Matzav",
-            body: `${requestedName} סיים/ה את השיחה`,
-          },
-          data: {
-            type: "call_finished",
-            targetUid,
-            targetName: requestedName,
-          },
-          android: {
-            priority: "high",
-            notification: {
-              sound: "default",
-            },
-          },
-          apns: {
-            payload: {
-              aps: {
-                sound: "default",
-              },
-            },
-          },
-        });
-
-        logger.info("Call-end notification accepted by FCM", {
-          waiterUid,
+    if (drivingStarted) {
+      jobs.push(
+        notifyWaiters({
+          database,
+          collection: "driving_waits",
           targetUid,
-          messageId,
-        });
-
-        // One request = one successful notification opportunity.
-        await waiterDoc.ref.delete();
-      } catch (error) {
-        const errorText = error?.message || String(error);
-        logger.error("Failed to notify call waiter", {
-          waiterUid,
-          targetUid,
-          error: errorText,
-          code: error?.code,
-        });
-
-        // Do not throw the user's request away on failure. Keeping diagnostics
-        // makes the problem visible and allows a fresh tap/token to replace it.
-        await waiterDoc.ref.set(
-          {
-            deliveryStatus: "failed",
-            deliveryError: errorText.slice(0, 500),
-            deliveryErrorCode: error?.code || null,
-            lastDeliveryAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
-          },
-          {merge: true},
-        ).catch(() => {});
-      }
-    });
+          targetName,
+          type: "driving_started",
+          body: (name) => `${name} התחיל/ה לנסוע`,
+          logLabel: "driving-start",
+        }),
+      );
+    }
 
     await Promise.all(jobs);
   },
