@@ -1011,11 +1011,12 @@ class _FriendTileState extends State<_FriendTile> {
         final hasTimer =
             activityTimerEnd != null || availabilityTimerEnd != null;
         final onCall = activity == ActivityStatus.onCall;
+        final driving = activity == ActivityStatus.driving;
 
         return Card(
           child: ListTile(
             onTap: () => _callFriend(context, displayName),
-            isThreeLine: onCall || hasTimer,
+            isThreeLine: onCall || !driving || hasTimer,
             leading: _FriendAvatar(
               name: displayName,
               photoUrl: photoUrl,
@@ -1039,6 +1040,12 @@ class _FriendTileState extends State<_FriendTile> {
                   ),
                 if (onCall)
                   _CallWaitButton(
+                    requesterUid: widget.ownerUid,
+                    targetUid: friendUid,
+                    targetName: displayName,
+                  ),
+                if (!driving)
+                  _DrivingWaitButton(
                     requesterUid: widget.ownerUid,
                     targetUid: friendUid,
                     targetName: displayName,
@@ -1135,6 +1142,90 @@ class _CallWaitButton extends StatelessWidget {
               size: 18,
             ),
             label: Text(waiting ? 'בטל המתנה לסיום השיחה' : 'המתן לסיום השיחה'),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _DrivingWaitButton extends StatelessWidget {
+  const _DrivingWaitButton({
+    required this.requesterUid,
+    required this.targetUid,
+    required this.targetName,
+  });
+
+  final String requesterUid;
+  final String targetUid;
+  final String targetName;
+
+  Future<void> _startWaiting(BuildContext context) async {
+    try {
+      final ok = await CallWaitService.instance.waitForDrivingStart(
+        requesterUid: requesterUid,
+        targetUid: targetUid,
+        targetName: targetName,
+      );
+      if (!context.mounted) return;
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$targetName כבר התחיל/ה לנסוע.')),
+        );
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('תקבל התראה כאשר $targetName יתחיל/תתחיל לנסוע.')),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('לא ניתן להפעיל המתנה לתחילת נסיעה: $e')),
+      );
+    }
+  }
+
+  Future<void> _cancelWaiting(BuildContext context) async {
+    try {
+      await CallWaitService.instance.cancelDrivingWait(
+        requesterUid: requesterUid,
+        targetUid: targetUid,
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('לא ניתן לבטל את ההמתנה לתחילת נסיעה: $e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<bool>(
+      stream: CallWaitService.instance.drivingWaitingStream(
+        requesterUid: requesterUid,
+        targetUid: targetUid,
+      ),
+      builder: (context, snapshot) {
+        final waiting = snapshot.data ?? false;
+        return Align(
+          alignment: AlignmentDirectional.centerStart,
+          child: TextButton.icon(
+            style: TextButton.styleFrom(
+              padding: EdgeInsets.zero,
+              visualDensity: VisualDensity.compact,
+            ),
+            onPressed: () =>
+                waiting ? _cancelWaiting(context) : _startWaiting(context),
+            icon: Icon(
+              waiting
+                  ? Icons.notifications_off_outlined
+                  : Icons.notifications_active_outlined,
+              size: 18,
+            ),
+            label: Text(
+              waiting ? 'בטל המתנה לתחילת נסיעה' : 'המתן לתחילת נסיעה',
+            ),
           ),
         );
       },
