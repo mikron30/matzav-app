@@ -122,7 +122,6 @@ service cloud.firestore {
     // Shared relationship marker. Either participant may create/update/delete
     // the pair, but membership itself cannot be changed after creation.
     match /friendships/{friendshipId} {
-      // Exact lookup is allowed to signed-in users; listing the collection is not.
       allow get: if signedIn();
       allow list: if false;
 
@@ -204,8 +203,14 @@ service cloud.firestore {
       }
     }
 
-    // Version 22: one-shot "wait until this friend's call ends" requests.
+    // One-shot "wait until this friend's call ends" requests.
     match /call_waits/{targetUid}/waiters/{requesterUid} {
+      allow create, read, update, delete:
+        if request.auth != null && request.auth.uid == requesterUid;
+    }
+
+    // One-shot "wait until this friend starts driving" requests.
+    match /driving_waits/{targetUid}/waiters/{requesterUid} {
       allow create, read, update, delete:
         if request.auth != null && request.auth.uid == requesterUid;
     }
