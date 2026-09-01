@@ -28,6 +28,11 @@
             android:authorities="${applicationId}.native-status-sync"
             android:exported="false"
             android:initOrder="90" />
+        <provider
+            android:name=".SleepWindowResetProvider"
+            android:authorities="${applicationId}.sleep-window-reset"
+            android:exported="false"
+            android:initOrder="80" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -63,6 +68,18 @@
         <!-- Re-register native Sleep API work after reboot or app replacement. -->
         <receiver
             android:name=".AutomationBootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Guarantees that an old sleep state is cleared when the supported
+             sleep window ends, even if the phone stays locked all day. -->
+        <receiver
+            android:name=".SleepWindowResetReceiver"
             android:enabled="true"
             android:exported="true">
             <intent-filter>
