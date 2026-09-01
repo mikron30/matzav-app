@@ -69,25 +69,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _restoreAutomationPreference() async {
     final prefs = await SharedPreferences.getInstance();
-
-    // First installation: automatic detection is ON.
-    // Afterwards, remember the user's last choice.
     final enabled = prefs.getBool('matzav_automation_enabled_v25') ?? true;
 
     if (!mounted) return;
     setState(() => _automationOn = enabled);
-
     if (!enabled) return;
 
     final profile = await FirebaseFirestore.instance
         .collection('profiles')
         .doc(uid)
         .get();
-
     final currentActivity = activityFromString(
       profile.data()?['activity'] as String?,
     );
-
     await _toggleAutomation(true, currentActivity);
   }
 
@@ -96,19 +90,14 @@ class _HomeScreenState extends State<HomeScreen> {
     _phoneSetupChecked = true;
 
     try {
-      final existingPhone = await UserRepository.instance.getRegisteredPhone(
-        uid,
-      );
+      final existingPhone = await UserRepository.instance.getRegisteredPhone(uid);
       if (existingPhone != null && existingPhone.isNotEmpty) return;
 
-      final hintedPhone = await PhoneHintService.instance
-          .requestPhoneNumberHint();
+      final hintedPhone = await PhoneHintService.instance.requestPhoneNumberHint();
       if (!mounted) return;
-
       final selectedPhone = await showDialog<String>(
         context: context,
-        builder: (context) =>
-            _PhoneSetupDialog(initialPhone: hintedPhone ?? ''),
+        builder: (context) => _PhoneSetupDialog(initialPhone: hintedPhone ?? ''),
       );
       if (selectedPhone == null || selectedPhone.trim().isEmpty) return;
 
@@ -139,9 +128,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       final snapshot = await UserRepository.instance.profileStream(uid).first;
-      final activity = activityFromString(
-        snapshot.data()?['activity'] as String?,
-      );
+      final activity = activityFromString(snapshot.data()?['activity'] as String?);
       await LocationStatusService.instance.start(
         uid: uid,
         currentActivity: activity,
@@ -154,18 +141,13 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => _automationOn = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'הזיהוי האוטומטי שמור, אבל לא ניתן להפעיל אותו כרגע: $e',
-          ),
+          content: Text('הזיהוי האוטומטי שמור, אבל לא ניתן להפעיל אותו כרגע: $e'),
         ),
       );
     }
   }
 
-  Future<void> _toggleAutomation(
-    bool value,
-    ActivityStatus currentActivity,
-  ) async {
+  Future<void> _toggleAutomation(bool value, ActivityStatus currentActivity) async {
     final prefs = await SharedPreferences.getInstance();
     try {
       if (value) {
@@ -182,9 +164,9 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) setState(() => _automationOn = value);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('האוטומציה לא הופעלה: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('האוטומציה לא הופעלה: $e')),
+      );
     }
   }
 
@@ -196,9 +178,9 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           IconButton(
             tooltip: 'Matzav Premium',
-            onPressed: () => Navigator.of(
-              context,
-            ).push(MaterialPageRoute(builder: (_) => PremiumScreen(uid: uid))),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => PremiumScreen(uid: uid)),
+            ),
             icon: const Icon(Icons.workspace_premium_outlined),
           ),
           IconButton(
@@ -228,19 +210,14 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (context, profileSnapshot) {
           final profile = profileSnapshot.data?.data() ?? <String, dynamic>{};
           final activity = StatusTimerService.effectiveActivity(profile);
-          final availability = StatusTimerService.effectiveAvailability(
-            profile,
-          );
+          final availability = StatusTimerService.effectiveAvailability(profile);
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
-            unawaited(
-              StatusTimerService.instance.syncAndSchedule(uid, profile),
-            );
+            unawaited(StatusTimerService.instance.syncAndSchedule(uid, profile));
           });
           final colors = Theme.of(context).colorScheme;
           return RefreshIndicator(
-            onRefresh: () =>
-                UserRepository.instance.syncFriendRelationships(uid),
+            onRefresh: () => UserRepository.instance.syncFriendRelationships(uid),
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
@@ -257,9 +234,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       );
                       if (end == null) {
-                        if (mounted) {
-                          setState(() => _statusUiRevision++);
-                        }
+                        if (mounted) setState(() => _statusUiRevision++);
                         return;
                       }
                       await StatusTimerService.instance.startActivityTimer(
@@ -280,9 +255,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       if (_automationOn &&
                           value != ActivityStatus.onCall &&
                           value != ActivityStatus.sleeping) {
-                        LocationStatusService.instance.noteManualActivity(
-                          value,
-                        );
+                        LocationStatusService.instance.noteManualActivity(value);
                       }
                     }
                     if (mounted) setState(() => _statusUiRevision++);
@@ -296,9 +269,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       );
                       if (end == null) {
-                        if (mounted) {
-                          setState(() => _statusUiRevision++);
-                        }
+                        if (mounted) setState(() => _statusUiRevision++);
                         return;
                       }
                       await StatusTimerService.instance.startAvailabilityTimer(
@@ -316,20 +287,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   },
                 ),
                 const SizedBox(height: 22),
-                // MATZAV_V25_FRIENDS_THEME
                 ListTileTheme(
                   data: ListTileThemeData(
                     dense: true,
-                    visualDensity: const VisualDensity(
-                      horizontal: -2,
-                      vertical: -2,
-                    ),
-                    contentPadding: const EdgeInsetsDirectional.fromSTEB(
-                      8,
-                      0,
-                      4,
-                      0,
-                    ),
+                    visualDensity: const VisualDensity(horizontal: -2, vertical: -2),
+                    contentPadding: const EdgeInsetsDirectional.fromSTEB(8, 0, 4, 0),
                     minLeadingWidth: 36,
                     horizontalTitleGap: 8,
                     minVerticalPadding: 2,
@@ -360,19 +322,18 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class _FriendsSection extends StatelessWidget {
   const _FriendsSection({required this.uid});
-
   final String uid;
 
   Future<void> _openAddFriends(BuildContext context) {
-    return Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const AddFriendsScreen()));
+    return Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const AddFriendsScreen()),
+    );
   }
 
   Future<void> _openPremium(BuildContext context) {
-    return Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => PremiumScreen(uid: uid)));
+    return Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => PremiumScreen(uid: uid)),
+    );
   }
 
   Future<void> _removeFriend(
@@ -400,19 +361,16 @@ class _FriendsSection extends StatelessWidget {
     if (confirmed != true || !context.mounted) return;
 
     try {
-      await UserRepository.instance.removeFriend(
-        ownerUid: uid,
-        friendId: friendId,
-      );
+      await UserRepository.instance.removeFriend(ownerUid: uid, friendId: friendId);
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('$friendName הוסר מרשימת החברים.')),
       );
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('לא ניתן להסיר את החבר: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('לא ניתן להסיר את החבר: $error')),
+      );
     }
   }
 
@@ -450,8 +408,9 @@ class _FriendsSection extends StatelessWidget {
                         children: [
                           Text(
                             'החברים שלי',
-                            style: Theme.of(context).textTheme.titleLarge
-                                ?.copyWith(fontWeight: FontWeight.bold),
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
                           ),
                           Text(
                             isPremium
@@ -462,6 +421,30 @@ class _FriendsSection extends StatelessWidget {
                         ],
                       ),
                     ),
+                    if (docs.isNotEmpty) ...[
+                      IconButton(
+                        tooltip: 'המתן לסיום שיחה',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => showFriendWaitDialog(
+                          context: context,
+                          requesterUid: uid,
+                          friendDocs: docs,
+                          kind: FriendWaitKind.callEnd,
+                        ),
+                        icon: const Text('📞🔔', style: TextStyle(fontSize: 20)),
+                      ),
+                      IconButton(
+                        tooltip: 'המתן לתחילת נסיעה',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => showFriendWaitDialog(
+                          context: context,
+                          requesterUid: uid,
+                          friendDocs: docs,
+                          kind: FriendWaitKind.drivingStart,
+                        ),
+                        icon: const Text('🚗🔔', style: TextStyle(fontSize: 20)),
+                      ),
+                    ],
                     FilledButton.icon(
                       onPressed: atFreeLimit
                           ? () => _openPremium(context)
@@ -475,38 +458,6 @@ class _FriendsSection extends StatelessWidget {
                     ),
                   ],
                 ),
-                if (docs.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  Align(
-                    alignment: AlignmentDirectional.centerStart,
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        OutlinedButton.icon(
-                          onPressed: () => showFriendWaitDialog(
-                            context: context,
-                            requesterUid: uid,
-                            friendDocs: docs,
-                            kind: FriendWaitKind.callEnd,
-                          ),
-                          icon: const Icon(Icons.phone_callback_outlined),
-                          label: const Text('המתן לסיום שיחה'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: () => showFriendWaitDialog(
-                            context: context,
-                            requesterUid: uid,
-                            friendDocs: docs,
-                            kind: FriendWaitKind.drivingStart,
-                          ),
-                          icon: const Icon(Icons.directions_car_outlined),
-                          label: const Text('המתן לתחילת נסיעה'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
                 const SizedBox(height: 10),
                 if (docs.isEmpty)
                   const Card(
@@ -540,7 +491,6 @@ class _FriendsSection extends StatelessWidget {
 
 class _PhoneSetupDialog extends StatefulWidget {
   const _PhoneSetupDialog({required this.initialPhone});
-
   final String initialPhone;
 
   @override
@@ -581,8 +531,7 @@ class _PhoneSetupDialogState extends State<_PhoneSetupDialog> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const Text(
-            'המספר משמש רק כדי לזהות חברים שכבר שמרו אותך באנשי הקשר. '
-            'אם המספר שמופיע אינו נכון, אפשר להחליף אותו.',
+            'המספר משמש רק כדי לזהות חברים שכבר שמרו אותך באנשי הקשר. אם המספר שמופיע אינו נכון, אפשר להחליף אותו.',
           ),
           const SizedBox(height: 16),
           TextField(
@@ -615,7 +564,6 @@ class _PhoneSetupDialogState extends State<_PhoneSetupDialog> {
 
 class _StatusTimerDialog extends StatefulWidget {
   const _StatusTimerDialog({required this.title});
-
   final String title;
 
   @override
@@ -638,16 +586,8 @@ class _StatusTimerDialogState extends State<_StatusTimerDialog> {
     );
     if (picked == null || !mounted) return;
 
-    var end = DateTime(
-      now.year,
-      now.month,
-      now.day,
-      picked.hour,
-      picked.minute,
-    );
-    if (!end.isAfter(now)) {
-      end = end.add(const Duration(days: 1));
-    }
+    var end = DateTime(now.year, now.month, now.day, picked.hour, picked.minute);
+    if (!end.isAfter(now)) end = end.add(const Duration(days: 1));
     if (end.difference(now) > const Duration(days: 1)) {
       setState(() => _error = 'אפשר לבחור עד 24 שעות קדימה.');
       return;
@@ -661,7 +601,6 @@ class _StatusTimerDialogState extends State<_StatusTimerDialog> {
   void _save() {
     final now = DateTime.now();
     DateTime? end;
-
     if (_useEndTime) {
       end = _selectedEnd;
       if (end == null) {
@@ -682,7 +621,6 @@ class _StatusTimerDialogState extends State<_StatusTimerDialog> {
       setState(() => _error = 'אפשר לבחור זמן של עד 24 שעות בלבד.');
       return;
     }
-
     Navigator.of(context).pop(end);
   }
 
@@ -791,9 +729,7 @@ class _StatusTimerDialogState extends State<_StatusTimerDialog> {
                 ),
               ),
             const SizedBox(height: 10),
-            const Text(
-              'מקסימום: 24 שעות. בסיום המצב יחזור אוטומטית למצב שהיה קודם.',
-            ),
+            const Text('מקסימום: 24 שעות. בסיום המצב יחזור אוטומטית למצב שהיה קודם.'),
             if (_error != null) ...[
               const SizedBox(height: 10),
               Text(
@@ -841,9 +777,9 @@ class _MyStatusCard extends StatelessWidget {
           children: [
             Text(
               'המצב שלי',
-              style: Theme.of(
-                context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<ActivityStatus>(
@@ -891,11 +827,7 @@ class _MyStatusCard extends StatelessWidget {
 }
 
 class _FriendTile extends StatefulWidget {
-  const _FriendTile({
-    required this.friend,
-    required this.onRemove,
-  });
-
+  const _FriendTile({required this.friend, required this.onRemove});
   final Map<String, dynamic> friend;
   final ValueChanged<String> onRemove;
 
@@ -922,16 +854,11 @@ class _FriendTileState extends State<_FriendTile> {
 
   String? get _phoneNumber {
     final direct = widget.friend['phone'];
-    if (direct is String && direct.trim().isNotEmpty) {
-      return direct.trim();
-    }
-
+    if (direct is String && direct.trim().isNotEmpty) return direct.trim();
     final phones = widget.friend['phones'];
     if (phones is List) {
       for (final value in phones) {
-        if (value is String && value.trim().isNotEmpty) {
-          return value.trim();
-        }
+        if (value is String && value.trim().isNotEmpty) return value.trim();
       }
     }
     return null;
@@ -945,7 +872,6 @@ class _FriendTileState extends State<_FriendTile> {
       );
       return;
     }
-
     final started = await DirectCallService.instance.callNumber(phone);
     if (!started && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1033,13 +959,10 @@ class _FriendTileState extends State<_FriendTile> {
         final availability = StatusTimerService.effectiveAvailability(profile);
         final displayName = profile['displayName'] as String? ?? name;
         final photoUrl = profile['photoUrl'] as String?;
-        final activityTimerEnd = StatusTimerService.activeActivityTimerEnd(
-          profile,
-        );
+        final activityTimerEnd = StatusTimerService.activeActivityTimerEnd(profile);
         final availabilityTimerEnd =
             StatusTimerService.activeAvailabilityTimerEnd(profile);
-        final hasTimer =
-            activityTimerEnd != null || availabilityTimerEnd != null;
+        final hasTimer = activityTimerEnd != null || availabilityTimerEnd != null;
 
         return Card(
           child: ListTile(
@@ -1085,7 +1008,6 @@ class _FriendTileState extends State<_FriendTile> {
 
 class _FriendMenu extends StatelessWidget {
   const _FriendMenu({required this.onRemove});
-
   final VoidCallback onRemove;
 
   @override
@@ -1158,10 +1080,7 @@ class _FriendAvatar extends StatelessWidget {
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(2),
-                  child: Text(
-                    activityEmoji!,
-                    style: const TextStyle(fontSize: 14),
-                  ),
+                  child: Text(activityEmoji!, style: const TextStyle(fontSize: 14)),
                 ),
               ),
             ),
