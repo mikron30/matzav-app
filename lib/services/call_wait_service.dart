@@ -3,6 +3,9 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 
+typedef _ProfileSubscription =
+    StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>;
+
 class CallWaitService {
   CallWaitService._();
   static final instance = CallWaitService._();
@@ -13,16 +16,15 @@ class CallWaitService {
 
   StreamSubscription<String>? _tokenSubscription;
   StreamSubscription<RemoteMessage>? _messageSubscription;
-  final Map<String, StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>>
-      _callEndSubscriptions = {};
-  final Map<String, DateTime> _lastCallEndNotice = {};
+  final Map<String, _ProfileSubscription> _statusSubscriptions = {};
+  final Map<String, DateTime> _lastStatusNotice = {};
   String? _uid;
 
   Stream<String> get foregroundMessages => _foregroundMessages.stream;
 
   /// Initializes FCM listeners without forcing a notification permission
   /// prompt. Permission is requested only when the user explicitly chooses
-  /// "wait for call to end" for the first time.
+  /// one of the wait-for-status notification buttons for the first time.
   Future<void> initializeForUser(String uid) async {
     _uid = uid;
     final messaging = FirebaseMessaging.instance;
@@ -45,9 +47,12 @@ class CallWaitService {
       final body = message.notification?.body?.trim();
       if (body == null || body.isEmpty) return;
 
-      if (message.data['type'] == 'call_finished') {
-        final targetUid = message.data['targetUid']?.toString() ?? '';
-        _emitCallFinishedOnce(targetUid, body);
+      final type = message.data['type']?.toString();
+      final targetUid = message.data['targetUid']?.toString() ?? '';
+      if (type == 'call_finished') {
+        _emitStatusNotice('call:$targetUid', body);
+      } else if (type == 'driving_started') {
+        _emitStatusNotice('drive:$targetUid', body);
       } else {
         _foregroundMessages.add(body);
       }
@@ -125,8 +130,45 @@ class CallWaitService {
     return waiting;
   }
 
+  Future<bool> waitForDrivingStart({
+    required String requesterUid,
+    required String targetUid,
+    required String targetName,
+  }) async {
+    final token = await _ensureNotificationPermission(requesterUid);
+
+    final targetRef = _db.collection('profiles').doc(targetUid);
+    final waitRef = _db
+        .collection('driving_waits')
+        .doc(targetUid)
+        .collection('waiters')
+        .doc(requesterUid);
+
+    final waiting = await _db.runTransaction<bool>((transaction) async {
+      final target = await transaction.get(targetRef);
+      final activity = target.data()?['activity']?.toString();
+      if (activity == 'driving') return false;
+
+      transaction.set(waitRef, {
+        'requesterUid': requesterUid,
+        'targetUid': targetUid,
+        'targetName': targetName,
+        'fcmToken': token,
+        'deliveryStatus': 'waiting',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      return true;
+    });
+
+    if (waiting) {
+      _watchDrivingStart(targetUid: targetUid, targetName: targetName);
+    }
+    return waiting;
+  }
+
   void _watchCallEnd({required String targetUid, required String targetName}) {
-    unawaited(_callEndSubscriptions.remove(targetUid)?.cancel());
+    final key = 'call:$targetUid';
+    unawaited(_statusSubscriptions.remove(key)?.cancel());
 
     var sawActiveCall = false;
     final subscription = _db
@@ -141,23 +183,44 @@ class CallWaitService {
           }
 
           if (sawActiveCall || snapshot.exists) {
-            _emitCallFinishedOnce(targetUid, '$targetName סיים/ה את השיחה');
-            unawaited(_callEndSubscriptions.remove(targetUid)?.cancel());
+            _emitStatusNotice(key, '$targetName סיים/ה את השיחה');
+            unawaited(_statusSubscriptions.remove(key)?.cancel());
           }
         });
 
-    _callEndSubscriptions[targetUid] = subscription;
+    _statusSubscriptions[key] = subscription;
   }
 
-  void _emitCallFinishedOnce(String targetUid, String message) {
-    final dedupeKey = targetUid.isEmpty ? message : targetUid;
+  void _watchDrivingStart({
+    required String targetUid,
+    required String targetName,
+  }) {
+    final key = 'drive:$targetUid';
+    unawaited(_statusSubscriptions.remove(key)?.cancel());
+
+    final subscription = _db
+        .collection('profiles')
+        .doc(targetUid)
+        .snapshots()
+        .listen((snapshot) {
+          final activity = snapshot.data()?['activity']?.toString();
+          if (activity != 'driving') return;
+
+          _emitStatusNotice(key, '$targetName התחיל/ה לנסוע');
+          unawaited(_statusSubscriptions.remove(key)?.cancel());
+        });
+
+    _statusSubscriptions[key] = subscription;
+  }
+
+  void _emitStatusNotice(String dedupeKey, String message) {
     final now = DateTime.now();
-    final previous = _lastCallEndNotice[dedupeKey];
+    final previous = _lastStatusNotice[dedupeKey];
     if (previous != null &&
         now.difference(previous) < const Duration(seconds: 15)) {
       return;
     }
-    _lastCallEndNotice[dedupeKey] = now;
+    _lastStatusNotice[dedupeKey] = now;
     _foregroundMessages.add(message);
   }
 
@@ -165,9 +228,22 @@ class CallWaitService {
     required String requesterUid,
     required String targetUid,
   }) async {
-    await _callEndSubscriptions.remove(targetUid)?.cancel();
+    await _statusSubscriptions.remove('call:$targetUid')?.cancel();
     await _db
         .collection('call_waits')
+        .doc(targetUid)
+        .collection('waiters')
+        .doc(requesterUid)
+        .delete();
+  }
+
+  Future<void> cancelDrivingWait({
+    required String requesterUid,
+    required String targetUid,
+  }) async {
+    await _statusSubscriptions.remove('drive:$targetUid')?.cancel();
+    await _db
+        .collection('driving_waits')
         .doc(targetUid)
         .collection('waiters')
         .doc(requesterUid)
@@ -178,8 +254,31 @@ class CallWaitService {
     required String requesterUid,
     required String targetUid,
   }) {
+    return _waiterStream(
+      collection: 'call_waits',
+      requesterUid: requesterUid,
+      targetUid: targetUid,
+    );
+  }
+
+  Stream<bool> drivingWaitingStream({
+    required String requesterUid,
+    required String targetUid,
+  }) {
+    return _waiterStream(
+      collection: 'driving_waits',
+      requesterUid: requesterUid,
+      targetUid: targetUid,
+    );
+  }
+
+  Stream<bool> _waiterStream({
+    required String collection,
+    required String requesterUid,
+    required String targetUid,
+  }) {
     return _db
-        .collection('call_waits')
+        .collection(collection)
         .doc(targetUid)
         .collection('waiters')
         .doc(requesterUid)
@@ -193,11 +292,11 @@ class CallWaitService {
   Future<void> dispose() async {
     await _tokenSubscription?.cancel();
     await _messageSubscription?.cancel();
-    for (final subscription in _callEndSubscriptions.values) {
+    for (final subscription in _statusSubscriptions.values) {
       await subscription.cancel();
     }
-    _callEndSubscriptions.clear();
-    _lastCallEndNotice.clear();
+    _statusSubscriptions.clear();
+    _lastStatusNotice.clear();
     _tokenSubscription = null;
     _messageSubscription = null;
     _uid = null;
