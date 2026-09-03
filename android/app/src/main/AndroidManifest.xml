@@ -33,6 +33,13 @@
             android:authorities="${applicationId}.sleep-window-reset"
             android:exported="false"
             android:initOrder="80" />
+        <!-- Registers Google's low-power IN_VEHICLE transition detector so
+             driving can still update Firestore after the Flutter UI is gone. -->
+        <provider
+            android:name=".NativeDrivingProvider"
+            android:authorities="${applicationId}.native-driving"
+            android:exported="false"
+            android:initOrder="70" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -93,6 +100,9 @@
             android:exported="false" />
         <receiver
             android:name=".SleepUpdateReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".DrivingTransitionReceiver"
             android:exported="false" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
