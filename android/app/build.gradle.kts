@@ -74,6 +74,8 @@ android {
 
 dependencies {
     implementation("androidx.work:work-runtime:2.10.5")
+    // WorkManager Operation.result exposes Guava ListenableFuture to Kotlin.
+    implementation("com.google.guava:guava:33.4.8-android")
     implementation("com.google.android.gms:play-services-auth:21.6.0")
     implementation("com.google.android.gms:play-services-location:21.4.0")
     implementation(platform("com.google.firebase:firebase-bom:34.17.0"))
