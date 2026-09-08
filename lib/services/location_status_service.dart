@@ -183,6 +183,16 @@ class LocationStatusService {
     // Flutter-side cache left over from a call that already ended in background.
     if (await AutomaticStatusService.instance.isOverrideActiveNow()) return;
 
+    // A few slow GPS samples at a traffic light must not undo an Android
+    // IN_VEHICLE transition. Native monitoring also survives a detached UI.
+    if (_drivingEnabled &&
+        await AutomaticStatusService.instance.isNativeDrivingActive()) {
+      _driving = true;
+      _fastSamples = 0;
+      _slowSamples = 0;
+      return;
+    }
+
     final speed = position.speed;
 
     if (_drivingEnabled) {

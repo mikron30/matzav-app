@@ -127,6 +127,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!enabled || !mounted) return;
 
     try {
+      // Native vehicle detection needs Physical Activity, not a GPS stream.
+      // Start it even if location services are disabled or GPS is denied.
+      await AutomaticStatusService.instance.start(uid: uid);
       final snapshot = await UserRepository.instance.profileStream(uid).first;
       final activity = activityFromString(snapshot.data()?['activity'] as String?);
       await LocationStatusService.instance.start(
@@ -134,7 +137,6 @@ class _HomeScreenState extends State<HomeScreen> {
         currentActivity: activity,
         remember: false,
       );
-      await AutomaticStatusService.instance.start(uid: uid);
       if (mounted) setState(() => _automationOn = true);
     } catch (e) {
       if (!mounted) return;
@@ -151,11 +153,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final prefs = await SharedPreferences.getInstance();
     try {
       if (value) {
+        await AutomaticStatusService.instance.start(uid: uid);
         await LocationStatusService.instance.start(
           uid: uid,
           currentActivity: currentActivity,
         );
-        await AutomaticStatusService.instance.start(uid: uid);
       } else {
         await AutomaticStatusService.instance.stop();
         await LocationStatusService.instance.disable();

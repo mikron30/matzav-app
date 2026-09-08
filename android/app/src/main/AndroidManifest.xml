@@ -72,7 +72,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- Re-register native Sleep API work after reboot or app replacement. -->
+        <!-- Re-register native sleep/driving work after reboot or app replacement. -->
         <receiver
             android:name=".AutomationBootReceiver"
             android:enabled="true"

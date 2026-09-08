@@ -166,10 +166,8 @@ class PhoneStateReceiver : BroadcastReceiver() {
 }
 
 /**
- * Starts the native process after reboot/app replacement so Sleep API pending
- * intents are re-registered without requiring the user to open Flutter first.
- * Location/drive detection is not started from boot; Android foreground-location
- * restrictions are respected and that feature resumes through its own service.
+ * Re-registers native sleep and vehicle transitions after reboot/app replacement.
+ * Vehicle transitions do not start a GPS foreground service from the background.
  */
 class AutomationBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
@@ -177,6 +175,7 @@ class AutomationBootReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED -> {
                 NativeSleepScheduler.reconcile(context.applicationContext)
+                NativeDrivingMonitor.reconcile(context.applicationContext)
             }
         }
     }

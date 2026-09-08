@@ -271,7 +271,11 @@ class NativeStatusSyncProvider : ContentProvider(),
 
             if (updates.isEmpty()) return@addOnCompleteListener
             updates["updatedAt"] = FieldValue.serverTimestamp()
-            profileRef.set(updates, SetOptions.merge())
+            profileRef.set(updates, SetOptions.merge()).addOnSuccessListener {
+                // Resume the current driving state only after the higher-priority
+                // call/sleep write has settled; fixed delays can race the network.
+                NativeDrivingMonitor.scheduleStatusSync(appContext)
+            }
         }
     }
 

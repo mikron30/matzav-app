@@ -85,6 +85,7 @@ class AutomaticStatusService {
 
     try {
       await _channel.invokeMethod<void>('startMonitoring', {
+        'drivingEnabled': settings.driving,
         'callsEnabled': _callsEnabled,
         'sleepEnabled': _sleepEnabled,
       });
@@ -100,6 +101,18 @@ class AutomaticStatusService {
   }
 
   Future<void> refresh({required String uid}) => start(uid: uid);
+
+  /// Android's vehicle transition remains authoritative at traffic lights.
+  /// GPS remains the fallback when the detector has not observed a trip yet.
+  Future<bool> isNativeDrivingActive() async {
+    try {
+      return await _channel.invokeMethod<bool>('isDrivingActive') ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
 
   Future<void> stop() async {
     try {
@@ -170,6 +183,21 @@ class AutomaticStatusService {
     } else {
       final previousName = prefs.getString(_previousActivityKey);
       var previous = activityFromString(previousName);
+      // A trip can start/end while a call owns the visible status. Do not
+      // restore an old "driving" value after Android already detected EXIT.
+      try {
+        if (await isNativeDrivingActive()) {
+          previous = ActivityStatus.driving;
+        } else if (previous == ActivityStatus.driving) {
+          final nativeReturn =
+              await _channel.invokeMethod<String>('drivingReturnActivity');
+          if (nativeReturn != null) previous = activityFromString(nativeReturn);
+        }
+      } on MissingPluginException {
+        // Other platforms keep their existing restoration behavior.
+      } on PlatformException {
+        // Fall back to the saved status if Android is temporarily unavailable.
+      }
       previous = await StatusTimerService.instance.resolveActivityReturn(
         uid,
         previous,
@@ -184,5 +212,16 @@ class AutomaticStatusService {
 
     _currentOverride = normalized;
     await prefs.setString(_lastOverrideKey, normalized);
+    if (normalized == 'none') {
+      try {
+        // Reconcile only after the Flutter restoration write, as the native
+        // call/sleep provider may have completed its own write earlier.
+        await _channel.invokeMethod<void>('syncDrivingStatus');
+      } on MissingPluginException {
+        // Android-only feature.
+      } on PlatformException {
+        // Persisted native transitions still have their WorkManager retry.
+      }
+    }
   }
 }

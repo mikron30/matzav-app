@@ -14,401 +14,311 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.Operation
+import androidx.work.OutOfQuotaPolicy
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import com.google.android.gms.location.ActivityRecognition
 import com.google.android.gms.location.ActivityTransition
 import com.google.android.gms.location.ActivityTransitionRequest
 import com.google.android.gms.location.ActivityTransitionResult
 import com.google.android.gms.location.DetectedActivity
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.FirebaseFirestore
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
-/**
- * Background-safe driving detection.
- *
- * Flutter's GPS stream is useful while the Flutter engine is alive, but it is
- * not a reliable trigger after the app UI/process has been removed. Google's
- * Activity Recognition Transition API is specifically designed to deliver
- * IN_VEHICLE enter/exit transitions through a PendingIntent, which can wake a
- * manifest BroadcastReceiver even when the Flutter UI is not running.
- *
- * This does NOT request ACCESS_BACKGROUND_LOCATION.
- */
-class NativeDrivingProvider : ContentProvider(),
-    SharedPreferences.OnSharedPreferenceChangeListener {
-
+/** Registers native vehicle transitions independently of the Flutter UI/GPS. */
+class NativeDrivingProvider : ContentProvider(), SharedPreferences.OnSharedPreferenceChangeListener {
     private var flutterPrefs: SharedPreferences? = null
     private var automaticPrefs: SharedPreferences? = null
+    private var authListener: FirebaseAuth.AuthStateListener? = null
 
     override fun onCreate(): Boolean {
         val appContext = context?.applicationContext ?: return false
+        flutterPrefs = appContext.getSharedPreferences(NativeDrivingMonitor.FLUTTER_PREFS, Context.MODE_PRIVATE)
+            .also { it.registerOnSharedPreferenceChangeListener(this) }
+        automaticPrefs = appContext.getSharedPreferences(NativeDrivingMonitor.AUTOMATIC_PREFS, Context.MODE_PRIVATE)
+            .also { it.registerOnSharedPreferenceChangeListener(this) }
 
-        flutterPrefs = appContext.getSharedPreferences(
-            NativeDrivingMonitor.FLUTTER_PREFS,
-            Context.MODE_PRIVATE,
-        ).also { it.registerOnSharedPreferenceChangeListener(this) }
-
-        automaticPrefs = appContext.getSharedPreferences(
-            NativeDrivingMonitor.AUTOMATIC_PREFS,
-            Context.MODE_PRIVATE,
-        ).also { it.registerOnSharedPreferenceChangeListener(this) }
-
-        NativeDrivingMonitor.reconcile(appContext)
+        // WorkManager's initializer runs after this provider. Defer until all
+        // providers are initialized, and wait for restored Firebase credentials.
+        Handler(Looper.getMainLooper()).post {
+            authListener = FirebaseAuth.AuthStateListener {
+                NativeDrivingMonitor.reconcile(appContext)
+            }.also { FirebaseAuth.getInstance().addAuthStateListener(it) }
+        }
         return true
     }
 
-    override fun onSharedPreferenceChanged(
-        sharedPreferences: SharedPreferences?,
-        key: String?,
-    ) {
+    override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
         val appContext = context?.applicationContext ?: return
-
-        if (sharedPreferences === flutterPrefs) {
-            if (
-                key == NativeDrivingMonitor.FLUTTER_DRIVING_ENABLED_KEY ||
-                key == NativeDrivingMonitor.FLUTTER_LEGACY_MASTER_KEY
-            ) {
-                NativeDrivingMonitor.reconcile(appContext)
-            }
-            return
-        }
-
-        if (sharedPreferences === automaticPrefs) {
-            if (
-                key == NativeDrivingMonitor.KEY_CALL_ENABLED ||
-                key == NativeDrivingMonitor.KEY_CALL_ACTIVE ||
-                key == NativeDrivingMonitor.KEY_SLEEP_ENABLED ||
-                key == NativeDrivingMonitor.KEY_SLEEP_ACTIVE
-            ) {
-                // The call/sleep provider may write its own Firestore update at
-                // the same time. Re-check twice so driving is applied/restored
-                // after that higher-priority override settles.
-                NativeDrivingMonitor.scheduleStatusSync(appContext)
-            }
+        if (sharedPreferences === flutterPrefs &&
+            (key == NativeDrivingMonitor.FLUTTER_DRIVING_ENABLED_KEY ||
+                key == NativeDrivingMonitor.FLUTTER_LEGACY_MASTER_KEY)) {
+            NativeDrivingMonitor.reconcile(appContext)
+        } else if (sharedPreferences === automaticPrefs && key in setOf(
+                "enabled", "call_enabled", "call_active", "sleep_enabled", "sleep_active")) {
+            NativeDrivingMonitor.scheduleStatusSync(appContext)
         }
     }
 
-    override fun query(
-        uri: Uri,
-        projection: Array<out String>?,
-        selection: String?,
-        selectionArgs: Array<out String>?,
-        sortOrder: String?,
-    ): Cursor? = null
-
+    override fun query(uri: Uri, projection: Array<out String>?, selection: String?,
+        selectionArgs: Array<out String>?, sortOrder: String?): Cursor? = null
     override fun getType(uri: Uri): String? = null
-
     override fun insert(uri: Uri, values: ContentValues?): Uri? = null
-
-    override fun delete(
-        uri: Uri,
-        selection: String?,
-        selectionArgs: Array<out String>?,
-    ): Int = 0
-
-    override fun update(
-        uri: Uri,
-        values: ContentValues?,
-        selection: String?,
-        selectionArgs: Array<out String>?,
-    ): Int = 0
+    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
+    override fun update(uri: Uri, values: ContentValues?, selection: String?,
+        selectionArgs: Array<out String>?): Int = 0
 }
 
 object NativeDrivingMonitor {
     const val FLUTTER_PREFS = "FlutterSharedPreferences"
     const val FLUTTER_DRIVING_ENABLED_KEY = "flutter.matzav_auto_driving_v31"
     const val FLUTTER_LEGACY_MASTER_KEY = "flutter.matzav_automation_enabled_v25"
-
     const val AUTOMATIC_PREFS = "matzav_automatic_status_v20"
-    const val KEY_CALL_ENABLED = "call_enabled"
-    const val KEY_SLEEP_ENABLED = "sleep_enabled"
-    const val KEY_CALL_ACTIVE = "call_active"
-    const val KEY_SLEEP_ACTIVE = "sleep_active"
-
+    const val KEY_OWNER = "owner_uid"
+    const val KEY_ACTIVE = "driving_active"
+    const val KEY_REVISION = "revision"
+    const val KEY_PENDING = "pending_sync"
+    const val KEY_HAS_STATE = "has_transition"
+    const val ACTION_TRANSITION = "com.mikron30.matzav.DRIVING_TRANSITION"
     private const val DRIVING_PREFS = "matzav_native_driving_v43"
-    private const val KEY_DRIVING_ACTIVE = "driving_active"
-    private const val KEY_PREVIOUS_ACTIVITY = "previous_activity"
-    private const val KEY_LAST_NON_DRIVING = "last_non_driving"
-    private const val TRANSITION_REQUEST_CODE = 43220
+    private const val REQUEST_CODE = 44220
+    private const val LEGACY_REQUEST_CODE = 43220
+    private var registered = false
+    private var registering = false
 
-    private val handler = Handler(Looper.getMainLooper())
+    fun prefs(context: Context): SharedPreferences =
+        context.getSharedPreferences(DRIVING_PREFS, Context.MODE_PRIVATE)
 
+    fun enabled(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(FLUTTER_PREFS, Context.MODE_PRIVATE)
+        return prefs.getBoolean(FLUTTER_DRIVING_ENABLED_KEY,
+            prefs.getBoolean(FLUTTER_LEGACY_MASTER_KEY, true))
+    }
+
+    fun hasPermission(context: Context): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+        context.checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
+
+    fun isDrivingActive(context: Context): Boolean {
+        val owner = FirebaseAuth.getInstance().currentUser?.uid ?: return false
+        return enabled(context) && hasPermission(context) &&
+            owner == prefs(context).getString(KEY_OWNER, null) &&
+            prefs(context).getBoolean(KEY_ACTIVE, false)
+    }
+
+    fun returnActivity(context: Context): String? {
+        val owner = FirebaseAuth.getInstance().currentUser?.uid ?: return null
+        val state = prefs(context)
+        if (state.getString(KEY_OWNER, null) != owner || !state.getBoolean(KEY_HAS_STATE, false)) return null
+        val previous = state.getString("previous_activity", null)
+            ?: state.getString("last_non_driving", null)
+        return previous?.takeIf { DrivingStatusPolicy.stable(it) }
+    }
+
+    @Synchronized
     fun reconcile(context: Context) {
         val appContext = context.applicationContext
-        if (!drivingEnabled(appContext)) {
-            removeTransitionUpdates(appContext)
-            setDrivingActive(appContext, false)
-            return
-        }
-
-        if (!hasActivityRecognitionPermission(appContext)) {
-            // The existing automatic-status permission flow normally grants
-            // Physical Activity for Sleep API. If the user denied it, GPS while
-            // Flutter is open remains the fallback, but closed-app transitions
-            // cannot be delivered by Android.
-            return
-        }
-
-        requestTransitionUpdates(appContext)
-        rememberCurrentNonDriving(appContext)
-
-        // Firebase Auth may still be restoring when content providers start.
-        // A short retry gives us a reliable return status before the next trip.
-        handler.postDelayed({ rememberCurrentNonDriving(appContext) }, 1500L)
-    }
-
-    fun onTransitionIntent(
-        context: Context,
-        intent: Intent,
-        onComplete: () -> Unit,
-    ) {
-        val appContext = context.applicationContext
-        if (!drivingEnabled(appContext)) {
-            onComplete()
-            return
-        }
-        if (!ActivityTransitionResult.hasResult(intent)) {
-            onComplete()
-            return
-        }
-
-        val result = ActivityTransitionResult.extractResult(intent)
-        if (result == null) {
-            onComplete()
-            return
-        }
-
-        var finalActive: Boolean? = null
-        for (event in result.transitionEvents) {
-            if (event.activityType != DetectedActivity.IN_VEHICLE) continue
-            when (event.transitionType) {
-                ActivityTransition.ACTIVITY_TRANSITION_ENTER -> finalActive = true
-                ActivityTransition.ACTIVITY_TRANSITION_EXIT -> finalActive = false
-            }
-        }
-
-        if (finalActive == null) {
-            onComplete()
-            return
-        }
-
-        setDrivingActive(appContext, finalActive, onComplete)
-    }
-
-    fun scheduleStatusSync(context: Context) {
-        val appContext = context.applicationContext
-        handler.postDelayed({ syncVisibleStatus(appContext) }, 250L)
-        handler.postDelayed({ syncVisibleStatus(appContext) }, 1200L)
-    }
-
-    private fun setDrivingActive(
-        context: Context,
-        active: Boolean,
-        onComplete: (() -> Unit)? = null,
-    ) {
-        val prefs = drivingPrefs(context)
-        val changed = prefs.getBoolean(KEY_DRIVING_ACTIVE, false) != active
-        if (changed) {
-            prefs.edit().putBoolean(KEY_DRIVING_ACTIVE, active).apply()
-        }
-        syncVisibleStatus(context, onComplete)
-    }
-
-    private fun syncVisibleStatus(
-        context: Context,
-        onComplete: (() -> Unit)? = null,
-    ) {
-        val appContext = context.applicationContext
-        val active = drivingPrefs(appContext)
-            .getBoolean(KEY_DRIVING_ACTIVE, false) && drivingEnabled(appContext)
-
-        // Phone call and sleep are higher-priority temporary statuses.
-        if (callOrSleepOverrideActive(appContext)) {
-            onComplete?.invoke()
-            return
-        }
-
         val user = FirebaseAuth.getInstance().currentUser
         if (user == null) {
-            onComplete?.invoke()
-            return
-        }
-
-        val prefs = drivingPrefs(appContext)
-        val profileRef = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-            .collection("profiles")
-            .document(user.uid)
-
-        if (active) {
-            val previous = prefs.getString(KEY_PREVIOUS_ACTIVITY, null)
-                ?: prefs.getString(KEY_LAST_NON_DRIVING, null)
-                ?: "home"
-
-            if (!prefs.contains(KEY_PREVIOUS_ACTIVITY)) {
-                prefs.edit().putString(KEY_PREVIOUS_ACTIVITY, previous).apply()
-            }
-
-            profileRef.set(
-                mapOf(
-                    "activity" to "driving",
-                    "updatedAt" to FieldValue.serverTimestamp(),
-                    "nativeDrivingDetected" to true,
-                ),
-                SetOptions.merge(),
-            ).addOnCompleteListener {
-                onComplete?.invoke()
+            removeUpdates(appContext)
+            prefs(appContext).getString(KEY_OWNER, null)?.let {
+                WorkManager.getInstance(appContext).cancelUniqueWork(workName(it))
             }
             return
         }
 
-        val restore = sanitizeReturnActivity(
-            prefs.getString(KEY_PREVIOUS_ACTIVITY, null)
-                ?: prefs.getString(KEY_LAST_NON_DRIVING, null)
-                ?: "home",
-        )
-
-        // Read the cached/current profile before restoring so a manual status
-        // selected after driving is not overwritten unnecessarily.
-        profileRef.get().addOnCompleteListener { task ->
-            val current = if (task.isSuccessful) {
-                task.result?.data?.get("activity") as? String
-            } else {
-                null
-            }
-
-            if (current == "driving" || current == null) {
-                profileRef.set(
-                    mapOf(
-                        "activity" to restore,
-                        "updatedAt" to FieldValue.serverTimestamp(),
-                        "nativeDrivingDetected" to FieldValue.delete(),
-                    ),
-                    SetOptions.merge(),
-                ).addOnCompleteListener {
-                    prefs.edit()
-                        .remove(KEY_PREVIOUS_ACTIVITY)
-                        .putString(KEY_LAST_NON_DRIVING, restore)
-                        .apply()
-                    onComplete?.invoke()
-                }
-            } else {
-                if (isStableNonDriving(current)) {
-                    prefs.edit()
-                        .remove(KEY_PREVIOUS_ACTIVITY)
-                        .putString(KEY_LAST_NON_DRIVING, current)
-                        .apply()
-                }
-                onComplete?.invoke()
-            }
+        val state = prefs(appContext)
+        val oldOwner = state.getString(KEY_OWNER, null)
+        if (oldOwner != user.uid) {
+            if (oldOwner != null) WorkManager.getInstance(appContext).cancelUniqueWork(workName(oldOwner))
+            // Never carry another account's trip or restoration status forward.
+            state.edit().clear().putString(KEY_OWNER, user.uid).apply()
         }
-    }
-
-    private fun rememberCurrentNonDriving(context: Context) {
-        val user = FirebaseAuth.getInstance().currentUser ?: return
-        val profileRef = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-            .collection("profiles")
-            .document(user.uid)
-
-        profileRef.get().addOnSuccessListener { snapshot ->
-            val activity = snapshot.data?.get("activity") as? String ?: return@addOnSuccessListener
-            if (isStableNonDriving(activity)) {
-                drivingPrefs(context).edit()
-                    .putString(KEY_LAST_NON_DRIVING, activity)
-                    .apply()
-            }
+        if (!enabled(appContext) || !hasPermission(appContext)) {
+            stop(appContext)
+            return
         }
+        if (!registered && !registering) registerUpdates(appContext)
+        if (state.getBoolean(KEY_PENDING, false)) scheduleStatusSync(appContext)
+        rememberCurrentNonDriving(appContext, user.uid)
     }
 
-    private fun isStableNonDriving(activity: String): Boolean {
-        return activity != "driving" &&
-            activity != "onCall" &&
-            activity != "sleeping"
-    }
-
-    private fun sanitizeReturnActivity(activity: String): String {
-        return when (activity) {
-            "driving", "onCall", "sleeping" -> "home"
-            else -> activity
+    fun stop(context: Context) {
+        removeUpdates(context)
+        if (prefs(context).getBoolean(KEY_ACTIVE, false)) {
+            val owner = prefs(context).getString(KEY_OWNER, null) ?: return
+            recordState(context, owner, false)
         }
+        scheduleStatusSync(context)
     }
 
-    private fun callOrSleepOverrideActive(context: Context): Boolean {
+    @Synchronized
+    fun recordState(context: Context, owner: String, active: Boolean) {
+        val state = prefs(context)
+        val editor = state.edit()
+        if (active && !state.getBoolean(KEY_ACTIVE, false)) editor.remove("previous_activity")
+        check(editor
+            .putString(KEY_OWNER, owner)
+            .putBoolean(KEY_ACTIVE, active)
+            .putBoolean(KEY_HAS_STATE, true)
+            .putBoolean(KEY_PENDING, true)
+            .putLong(KEY_REVISION, state.getLong(KEY_REVISION, 0L) + 1L)
+            .commit()) { "Could not persist the driving transition" }
+    }
+
+    @Synchronized
+    fun completeSync(context: Context, owner: String, revision: Long, returnActivity: String?) {
+        val state = prefs(context)
+        if (!DrivingStatusPolicy.isCurrentSnapshot(owner,
+                FirebaseAuth.getInstance().currentUser?.uid, state.getString(KEY_OWNER, null),
+                revision, state.getLong(KEY_REVISION, 0L))) return
+        val editor = state.edit().putBoolean(KEY_PENDING, false)
+        returnActivity?.let { editor.putString("previous_activity", it) }
+        editor.commit()
+    }
+
+    fun scheduleStatusSync(context: Context): Operation? {
+        val state = prefs(context)
+        val owner = state.getString(KEY_OWNER, null) ?: return null
+        if (!state.getBoolean(KEY_HAS_STATE, false)) return null
+        state.edit().putBoolean(KEY_PENDING, true).apply()
+        val builder = OneTimeWorkRequestBuilder<DrivingStatusWorker>()
+            .setInputData(workDataOf(KEY_OWNER to owner))
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+        }
+        // Serialize updates. Each worker reads the latest persisted state, so a
+        // queued ENTER cannot replay an old trip after EXIT while offline.
+        return WorkManager.getInstance(context).enqueueUniqueWork(
+            workName(owner), ExistingWorkPolicy.APPEND_OR_REPLACE, builder.build())
+    }
+
+    fun callOrSleepActive(context: Context): Boolean {
         val prefs = context.getSharedPreferences(AUTOMATIC_PREFS, Context.MODE_PRIVATE)
-        val callActive = prefs.getBoolean(KEY_CALL_ENABLED, false) &&
-            prefs.getBoolean(KEY_CALL_ACTIVE, false)
-        val sleepActive = prefs.getBoolean(KEY_SLEEP_ENABLED, false) &&
-            prefs.getBoolean(KEY_SLEEP_ACTIVE, false)
-        return callActive || sleepActive
+        return prefs.getBoolean("enabled", false) && (
+            (prefs.getBoolean("call_enabled", false) && prefs.getBoolean("call_active", false)) ||
+            (prefs.getBoolean("sleep_enabled", false) && prefs.getBoolean("sleep_active", false)))
     }
 
-    private fun drivingEnabled(context: Context): Boolean {
-        val prefs = context.getSharedPreferences(FLUTTER_PREFS, Context.MODE_PRIVATE)
-        val legacy = prefs.getBoolean(FLUTTER_LEGACY_MASTER_KEY, true)
-        return prefs.getBoolean(FLUTTER_DRIVING_ENABLED_KEY, legacy)
+    private fun workName(owner: String) = "matzav-driving-status-$owner"
+
+    private fun rememberCurrentNonDriving(context: Context, owner: String) {
+        FirebaseFirestore.getInstance().collection("profiles").document(owner).get()
+            .addOnSuccessListener { snapshot ->
+                val activity = snapshot.getString("activity")
+                if (prefs(context).getString(KEY_OWNER, null) == owner &&
+                    DrivingStatusPolicy.stable(activity)) {
+                    prefs(context).edit().putString("last_non_driving", activity).apply()
+                }
+            }
     }
 
-    private fun requestTransitionUpdates(context: Context) {
-        val transitions = listOf(
-            ActivityTransition.Builder()
-                .setActivityType(DetectedActivity.IN_VEHICLE)
-                .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
-                .build(),
-            ActivityTransition.Builder()
-                .setActivityType(DetectedActivity.IN_VEHICLE)
-                .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_EXIT)
-                .build(),
-        )
-        val request = ActivityTransitionRequest(transitions)
-
+    private fun registerUpdates(context: Context) {
+        registering = true
+        val request = ActivityTransitionRequest(listOf(
+            ActivityTransition.Builder().setActivityType(DetectedActivity.IN_VEHICLE)
+                .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER).build(),
+            ActivityTransition.Builder().setActivityType(DetectedActivity.IN_VEHICLE)
+                .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_EXIT).build()))
         try {
+            removeLegacyPendingIntent(context)
             ActivityRecognition.getClient(context)
                 .requestActivityTransitionUpdates(request, transitionPendingIntent(context))
-        } catch (_: SecurityException) {
-            // Permission was revoked after registration.
-        } catch (_: Exception) {
-            // GPS-based detection while Flutter is alive remains the fallback.
+                .addOnSuccessListener {
+                    registering = false
+                    registered = true
+                    if (!enabled(context) || !hasPermission(context) ||
+                        FirebaseAuth.getInstance().currentUser == null) removeUpdates(context)
+                }
+                .addOnFailureListener { error ->
+                    registering = false
+                    registered = false
+                    Log.w("MatzavDriving", "Vehicle transition registration failed", error)
+                }
+        } catch (error: Exception) {
+            registering = false
+            registered = false
+            Log.w("MatzavDriving", "Vehicle transition registration failed", error)
         }
     }
 
-    private fun removeTransitionUpdates(context: Context) {
-        if (!hasActivityRecognitionPermission(context)) return
+    private fun removeUpdates(context: Context) {
+        registered = false
         try {
-            ActivityRecognition.getClient(context)
-                .removeActivityTransitionUpdates(transitionPendingIntent(context))
-        } catch (_: Exception) {
-            // Nothing else to clean up.
+            if (hasPermission(context)) {
+                ActivityRecognition.getClient(context)
+                    .removeActivityTransitionUpdates(transitionPendingIntent(context))
+                    .addOnFailureListener { error -> Log.w("MatzavDriving", "Vehicle unregister failed", error) }
+            }
+            removeLegacyPendingIntent(context)
+        } catch (error: Exception) {
+            Log.w("MatzavDriving", "Vehicle unregister failed", error)
         }
+    }
+
+    private fun removeLegacyPendingIntent(context: Context) {
+        val old = PendingIntent.getBroadcast(context, LEGACY_REQUEST_CODE,
+            Intent(context, DrivingTransitionReceiver::class.java),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE) ?: return
+        if (hasPermission(context)) {
+            ActivityRecognition.getClient(context).removeActivityTransitionUpdates(old)
+                .addOnCompleteListener { old.cancel() }
+        } else old.cancel()
     }
 
     private fun transitionPendingIntent(context: Context): PendingIntent {
-        val intent = Intent(context, DrivingTransitionReceiver::class.java)
-        return PendingIntent.getBroadcast(
-            context,
-            TRANSITION_REQUEST_CODE,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        // Play services must fill in ActivityTransitionResult extras. IMMUTABLE
+        // discards them. Keep the mutable intent explicitly scoped to our receiver.
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+        return PendingIntent.getBroadcast(context, REQUEST_CODE,
+            Intent(context, DrivingTransitionReceiver::class.java).setAction(ACTION_TRANSITION), flags)
     }
-
-    private fun hasActivityRecognitionPermission(context: Context): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return true
-        return context.checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) ==
-            PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun drivingPrefs(context: Context): SharedPreferences =
-        context.getSharedPreferences(DRIVING_PREFS, Context.MODE_PRIVATE)
 }
 
 class DrivingTransitionReceiver : BroadcastReceiver() {
+    companion object {
+        private val executor = Executors.newSingleThreadExecutor()
+    }
+
     override fun onReceive(context: Context, intent: Intent?) {
-        if (intent == null) return
+        val transitionIntent = intent ?: return
+        if (transitionIntent.action != NativeDrivingMonitor.ACTION_TRANSITION ||
+            !ActivityTransitionResult.hasResult(transitionIntent)) return
+        val result = ActivityTransitionResult.extractResult(transitionIntent) ?: return
+        val event = result.transitionEvents.lastOrNull { it.activityType == DetectedActivity.IN_VEHICLE } ?: return
+        val active = when (event.transitionType) {
+            ActivityTransition.ACTIVITY_TRANSITION_ENTER -> true
+            ActivityTransition.ACTIVITY_TRANSITION_EXIT -> false
+            else -> return
+        }
+        val appContext = context.applicationContext
+        if (!NativeDrivingMonitor.enabled(appContext) || !NativeDrivingMonitor.hasPermission(appContext)) return
         val pending = goAsync()
-        NativeDrivingMonitor.onTransitionIntent(
-            context.applicationContext,
-            intent,
-        ) {
-            pending.finish()
+        executor.execute {
+            try {
+                val owner = FirebaseAuth.getInstance().currentUser?.uid
+                if (owner != null) {
+                    NativeDrivingMonitor.recordState(appContext, owner, active)
+                    // Keep only durable enqueueing in the broadcast's short
+                    // lifetime. Network I/O belongs to WorkManager, not goAsync.
+                    NativeDrivingMonitor.scheduleStatusSync(appContext)?.result?.get(5, TimeUnit.SECONDS)
+                }
+            } catch (error: Exception) {
+                Log.w("MatzavDriving", "Could not enqueue vehicle status; persisted state will retry on startup", error)
+            } finally {
+                pending.finish()
+            }
         }
     }
 }

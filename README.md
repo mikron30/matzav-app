@@ -20,6 +20,11 @@ Matzav is a Flutter/Firebase app for sharing friends' current activity and avail
 
 ## Local setup
 
+Android version **0.1.0+44** fixes background driving registration and delivers
+vehicle status through durable native work. See [background driving setup and
+verification](BACKGROUND_DRIVING_V44.md). A new Android build/install is required;
+updating GitHub Pages does not update the installed app.
+
 Platform folders are included in the repository. Firebase configuration files and signing keys are intentionally excluded.
 
 1. Install Flutter and Firebase CLI.

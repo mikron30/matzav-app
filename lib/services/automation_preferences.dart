@@ -18,7 +18,7 @@ class AutomationFeatureSettings {
   bool get allEnabled => driving && zones && away && calls && sleep;
   bool get anyEnabled => driving || zones || away || calls || sleep;
   bool get locationEnabled => driving || zones || away;
-  bool get nativeEnabled => calls || sleep;
+  bool get nativeEnabled => driving || calls || sleep;
 
   AutomationFeatureSettings copyWith({
     bool? driving,

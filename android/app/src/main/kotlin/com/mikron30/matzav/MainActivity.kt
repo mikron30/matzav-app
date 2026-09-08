@@ -74,6 +74,8 @@ class MainActivity : FlutterActivity() {
         automaticStatusChannel!!.setMethodCallHandler { call, result ->
             when (call.method) {
                 "startMonitoring" -> {
+                    val drivingEnabled =
+                        call.argument<Boolean>("drivingEnabled") ?: true
                     val callsEnabled =
                         call.argument<Boolean>("callsEnabled") ?: true
                     val sleepEnabled =
@@ -81,17 +83,29 @@ class MainActivity : FlutterActivity() {
                     startAutomaticMonitoring(
                         callsEnabled,
                         sleepEnabled,
+                        drivingEnabled,
                         result,
                     )
                 }
                 "stopMonitoring" -> {
                     AutomaticStatusMonitor.stop(applicationContext)
+                    NativeDrivingMonitor.stop(applicationContext)
                     result.success(null)
                 }
                 "getCurrentOverride" -> {
                     result.success(
                         AutomaticStatusMonitor.currentOverride(applicationContext),
                     )
+                }
+                "isDrivingActive" -> {
+                    result.success(NativeDrivingMonitor.isDrivingActive(applicationContext))
+                }
+                "drivingReturnActivity" -> {
+                    result.success(NativeDrivingMonitor.returnActivity(applicationContext))
+                }
+                "syncDrivingStatus" -> {
+                    NativeDrivingMonitor.scheduleStatusSync(applicationContext)
+                    result.success(null)
                 }
                 else -> result.notImplemented()
             }
@@ -100,9 +114,16 @@ class MainActivity : FlutterActivity() {
         AutomaticStatusMonitor.attachChannel(automaticStatusChannel!!)
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Also recover when Physical Activity was granted in Android Settings.
+        NativeDrivingMonitor.reconcile(applicationContext)
+    }
+
     private fun missingAutomaticPermissions(
         callsEnabled: Boolean,
         sleepEnabled: Boolean,
+        drivingEnabled: Boolean,
     ): Array<String> {
         val missing = mutableListOf<String>()
 
@@ -116,7 +137,7 @@ class MainActivity : FlutterActivity() {
         }
 
         if (
-            sleepEnabled &&
+            DrivingStatusPolicy.requiresPhysicalActivityPermission(drivingEnabled, sleepEnabled) &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
             checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) !=
             PackageManager.PERMISSION_GRANTED
@@ -130,15 +151,17 @@ class MainActivity : FlutterActivity() {
     private fun startAutomaticMonitoring(
         callsEnabled: Boolean,
         sleepEnabled: Boolean,
+        drivingEnabled: Boolean,
         result: MethodChannel.Result,
     ) {
-        if (!callsEnabled && !sleepEnabled) {
+        if (!callsEnabled && !sleepEnabled && !drivingEnabled) {
             AutomaticStatusMonitor.stop(applicationContext)
+            NativeDrivingMonitor.reconcile(applicationContext)
             result.success(null)
             return
         }
 
-        val missing = missingAutomaticPermissions(callsEnabled, sleepEnabled)
+        val missing = missingAutomaticPermissions(callsEnabled, sleepEnabled, drivingEnabled)
         if (missing.isNotEmpty()) {
             if (pendingAutomaticStatusResult != null) {
                 result.error(
@@ -161,6 +184,7 @@ class MainActivity : FlutterActivity() {
             callsEnabled,
             sleepEnabled,
         )
+        NativeDrivingMonitor.reconcile(applicationContext)
         result.success(null)
     }
 
@@ -223,6 +247,9 @@ class MainActivity : FlutterActivity() {
                 pendingAutomaticCallsEnabled,
                 pendingAutomaticSleepEnabled,
             )
+            // The startup ContentProvider ran before the permission dialog.
+            // Register now, without requiring the user to restart the app.
+            NativeDrivingMonitor.reconcile(applicationContext)
             result.success(null)
             return
         }

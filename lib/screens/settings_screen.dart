@@ -346,7 +346,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   secondary: const Icon(Icons.directions_car_outlined),
                   title: const Text('זיהוי נהיגה'),
                   subtitle: const Text(
-                    'משתמש ב־GPS ובמהירות כדי לעבור אוטומטית למצב "בנסיעה".',
+                    'באנדרואיד מזהה נסיעה גם כשהאפליקציה סגורה. '
+                    'יש לאשר הרשאת "פעילות גופנית". GPS משמש גם לזיהוי לפי מהירות.',
                   ),
                 ),
                 const Divider(height: 1),
