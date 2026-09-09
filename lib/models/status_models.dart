@@ -8,6 +8,7 @@ enum ActivityStatus {
   onCall,
   sleeping,
   dogWalk,
+  abroad,
 }
 
 enum AvailabilityStatus { freeToTalk, canTalk, doNotDisturb }
@@ -23,6 +24,7 @@ extension ActivityStatusUi on ActivityStatus {
         ActivityStatus.onCall => 'בשיחה',
         ActivityStatus.sleeping => 'ישן',
         ActivityStatus.dogWalk => 'טיול עם הכלב',
+        ActivityStatus.abroad => 'בחו"ל',
       };
 
   String get emoji => switch (this) {
@@ -35,6 +37,7 @@ extension ActivityStatusUi on ActivityStatus {
         ActivityStatus.onCall => '📞',
         ActivityStatus.sleeping => '😴',
         ActivityStatus.dogWalk => '🐕',
+        ActivityStatus.abroad => '✈️',
       };
 }
 
