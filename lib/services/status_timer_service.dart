@@ -18,6 +18,7 @@ class StatusTimerService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   Timer? _activityTimer;
   Timer? _availabilityTimer;
+  Timer? _abroadBoundaryTimer;
 
   static DateTime? dateFrom(dynamic value) {
     if (value is Timestamp) return value.toDate();
@@ -25,14 +26,55 @@ class StatusTimerService {
     return null;
   }
 
+  static AbroadSchedule? abroadSchedule(Map<String, dynamic> profile) {
+    final start = dateFrom(profile['abroadStartsAt']);
+    final endExclusive = dateFrom(profile['abroadEndsAt']);
+    if (start == null || endExclusive == null || !start.isBefore(endExclusive)) {
+      return null;
+    }
+    return AbroadSchedule(start: start, endExclusive: endExclusive);
+  }
+
+  static AbroadSchedule? activeAbroadSchedule(
+    Map<String, dynamic> profile, {
+    DateTime? now,
+  }) {
+    final schedule = abroadSchedule(profile);
+    if (schedule == null) return null;
+    final check = now ?? DateTime.now();
+    if (check.isBefore(schedule.start) || !check.isBefore(schedule.endExclusive)) {
+      return null;
+    }
+    return schedule;
+  }
+
+  static bool isAbroadActive(
+    Map<String, dynamic> profile, {
+    DateTime? now,
+  }) {
+    return activeAbroadSchedule(profile, now: now) != null;
+  }
+
   static ActivityStatus effectiveActivity(Map<String, dynamic> profile) {
-    final current = activityFromString(profile['activity'] as String?);
-    if (current != ActivityStatus.meeting) return current;
+    var current = activityFromString(profile['activity'] as String?);
 
-    final end = dateFrom(profile['activityTimerEndsAt']);
-    if (end == null || DateTime.now().isBefore(end)) return current;
+    // Real-time call/sleep overrides and an active meeting are more specific
+    // than a planned trip and should remain visible to friends.
+    if (current == ActivityStatus.onCall || current == ActivityStatus.sleeping) {
+      return current;
+    }
 
-    return activityFromString(profile['activityTimerPrevious'] as String?);
+    if (current == ActivityStatus.meeting) {
+      final end = dateFrom(profile['activityTimerEndsAt']);
+      if (end == null || DateTime.now().isBefore(end)) return current;
+      current = activityFromString(profile['activityTimerPrevious'] as String?);
+    }
+
+    // A scheduled trip masks ordinary location states (home/away/work/driving)
+    // for the selected calendar dates without needing background GPS.
+    if (isAbroadActive(profile)) return ActivityStatus.abroad;
+
+    return current;
   }
 
   static AvailabilityStatus effectiveAvailability(
@@ -67,6 +109,37 @@ class StatusTimerService {
     final end = dateFrom(profile['availabilityTimerEndsAt']);
     if (end == null || !DateTime.now().isBefore(end)) return null;
     return end;
+  }
+
+  Future<void> setAbroadSchedule({
+    required String uid,
+    required DateTime startsAt,
+    required DateTime endsAtExclusive,
+  }) async {
+    if (!startsAt.isBefore(endsAtExclusive)) {
+      throw ArgumentError('Abroad start must be before end.');
+    }
+
+    await _db.collection('profiles').doc(uid).set({
+      'abroadStartsAt': Timestamp.fromDate(startsAt),
+      'abroadEndsAt': Timestamp.fromDate(endsAtExclusive),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    _scheduleAbroadBoundary(
+      uid,
+      AbroadSchedule(start: startsAt, endExclusive: endsAtExclusive),
+    );
+  }
+
+  Future<void> clearAbroadSchedule(String uid) async {
+    _abroadBoundaryTimer?.cancel();
+    _abroadBoundaryTimer = null;
+    await _db.collection('profiles').doc(uid).set({
+      'abroadStartsAt': FieldValue.delete(),
+      'abroadEndsAt': FieldValue.delete(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   Future<void> startActivityTimer({
@@ -125,8 +198,16 @@ class StatusTimerService {
       'activity': activity.name,
       'activityTimerEndsAt': FieldValue.delete(),
       'activityTimerPrevious': FieldValue.delete(),
+      if (activity != ActivityStatus.abroad)
+        'abroadStartsAt': FieldValue.delete(),
+      if (activity != ActivityStatus.abroad)
+        'abroadEndsAt': FieldValue.delete(),
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+    if (activity != ActivityStatus.abroad) {
+      _abroadBoundaryTimer?.cancel();
+      _abroadBoundaryTimer = null;
+    }
     await BusyAvailabilityService.instance.syncForActivity(uid, activity);
   }
 
@@ -146,8 +227,8 @@ class StatusTimerService {
     }, SetOptions(merge: true));
 
     final profile = await _db.collection('profiles').doc(uid).get();
-    final currentActivity = activityFromString(
-      profile.data()?['activity'] as String?,
+    final currentActivity = effectiveActivity(
+      profile.data() ?? const <String, dynamic>{},
     );
     await BusyAvailabilityService.instance.syncForActivity(
       uid,
@@ -163,6 +244,7 @@ class StatusTimerService {
     final activityPrevious = profile['activityTimerPrevious'] as String?;
     final availabilityEnd = dateFrom(profile['availabilityTimerEndsAt']);
     final availabilityPrevious = profile['availabilityTimerPrevious'] as String?;
+    final trip = abroadSchedule(profile);
 
     final prefs = await SharedPreferences.getInstance();
     if (activityEnd != null && activityPrevious != null) {
@@ -190,6 +272,14 @@ class StatusTimerService {
         _scheduleAvailability(uid, availabilityEnd);
       } else {
         await _restoreAvailability(uid);
+      }
+    }
+
+    if (trip != null) {
+      if (!DateTime.now().isBefore(trip.endExclusive)) {
+        await clearAbroadSchedule(uid);
+      } else {
+        _scheduleAbroadBoundary(uid, trip);
       }
     }
 
@@ -243,7 +333,15 @@ class StatusTimerService {
         'activityTimerPrevious': FieldValue.delete(),
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
-      await BusyAvailabilityService.instance.syncForActivity(uid, previous);
+      await BusyAvailabilityService.instance.syncForActivity(
+        uid,
+        effectiveActivity({
+          ...data,
+          'activity': previous.name,
+          'activityTimerEndsAt': null,
+          'activityTimerPrevious': null,
+        }),
+      );
       await _clearActivityPrefs();
     }
     // If call/sleep/driving is currently overriding the meeting, keep the
@@ -269,8 +367,8 @@ class StatusTimerService {
     await _clearAvailabilityPrefs();
 
     final updatedProfile = await ref.get();
-    final currentActivity = activityFromString(
-      updatedProfile.data()?['activity'] as String?,
+    final currentActivity = effectiveActivity(
+      updatedProfile.data() ?? const <String, dynamic>{},
     );
     await BusyAvailabilityService.instance.syncForActivity(
       uid,
@@ -323,11 +421,43 @@ class StatusTimerService {
     });
   }
 
+  void _scheduleAbroadBoundary(String uid, AbroadSchedule schedule) {
+    _abroadBoundaryTimer?.cancel();
+    final now = DateTime.now();
+
+    if (!now.isBefore(schedule.endExclusive)) {
+      unawaited(clearAbroadSchedule(uid));
+      return;
+    }
+
+    final nextBoundary = now.isBefore(schedule.start)
+        ? schedule.start
+        : schedule.endExclusive;
+    final delay = nextBoundary.difference(now);
+
+    _abroadBoundaryTimer = Timer(delay, () async {
+      if (nextBoundary == schedule.endExclusive) {
+        await clearAbroadSchedule(uid);
+        return;
+      }
+
+      // Touch the profile at trip start so already-open friend screens receive
+      // a Firestore event immediately. The date fields themselves determine
+      // the effective status even if the owner's app is closed.
+      await _db.collection('profiles').doc(uid).set({
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      _scheduleAbroadBoundary(uid, schedule);
+    });
+  }
+
   void cancelLocalTimers() {
     _activityTimer?.cancel();
     _availabilityTimer?.cancel();
+    _abroadBoundaryTimer?.cancel();
     _activityTimer = null;
     _availabilityTimer = null;
+    _abroadBoundaryTimer = null;
   }
 
   void _validateEnd(DateTime endsAt) {
@@ -336,4 +466,13 @@ class StatusTimerService {
       throw ArgumentError('Status timer must be between 1 minute and 24 hours.');
     }
   }
+}
+
+class AbroadSchedule {
+  const AbroadSchedule({required this.start, required this.endExclusive});
+
+  final DateTime start;
+  final DateTime endExclusive;
+
+  DateTime get lastDay => endExclusive.subtract(const Duration(days: 1));
 }
