@@ -24,6 +24,16 @@ import 'add_friends_screen.dart';
 import 'premium_screen.dart';
 import 'settings_screen.dart';
 
+String _formatDate(DateTime value) {
+  final day = value.day.toString().padLeft(2, '0');
+  final month = value.month.toString().padLeft(2, '0');
+  return '$day/$month/${value.year}';
+}
+
+String _formatAbroadSchedule(AbroadSchedule schedule) {
+  return '${_formatDate(schedule.start)} – ${_formatDate(schedule.lastDay)}';
+}
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -213,6 +223,7 @@ class _HomeScreenState extends State<HomeScreen> {
           final profile = profileSnapshot.data?.data() ?? <String, dynamic>{};
           final activity = StatusTimerService.effectiveActivity(profile);
           final availability = StatusTimerService.effectiveAvailability(profile);
+          final abroadSchedule = StatusTimerService.abroadSchedule(profile);
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
             unawaited(StatusTimerService.instance.syncAndSchedule(uid, profile));
@@ -227,8 +238,84 @@ class _HomeScreenState extends State<HomeScreen> {
                   key: ValueKey(_statusUiRevision),
                   activity: activity,
                   availability: availability,
+                  abroadSchedule: abroadSchedule,
+                  onCancelAbroad: abroadSchedule == null
+                      ? null
+                      : () async {
+                          await StatusTimerService.instance.clearAbroadSchedule(uid);
+                          if (!mounted) return;
+                          setState(() => _statusUiRevision++);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('תכנון הנסיעה לחו"ל בוטל.')),
+                          );
+                        },
                   onActivityChanged: (value) async {
-                    if (value == ActivityStatus.meeting) {
+                    if (value == ActivityStatus.abroad) {
+                      final now = DateTime.now();
+                      final existing = StatusTimerService.abroadSchedule(profile);
+                      final firstDate = DateTime(now.year - 1, 1, 1);
+                      final lastDate = DateTime(now.year + 3, 12, 31);
+                      DateTimeRange? initialRange;
+                      if (existing != null &&
+                          !existing.start.isBefore(firstDate) &&
+                          !existing.lastDay.isAfter(lastDate)) {
+                        initialRange = DateTimeRange(
+                          start: existing.start,
+                          end: existing.lastDay,
+                        );
+                      }
+
+                      final picked = await showDateRangePicker(
+                        context: context,
+                        firstDate: firstDate,
+                        lastDate: lastDate,
+                        initialDateRange: initialRange,
+                        helpText: 'בחר תאריכים לחו"ל',
+                        saveText: 'שמור',
+                        cancelText: 'ביטול',
+                      );
+                      if (picked == null) {
+                        if (mounted) setState(() => _statusUiRevision++);
+                        return;
+                      }
+
+                      final startsAt = DateTime(
+                        picked.start.year,
+                        picked.start.month,
+                        picked.start.day,
+                      );
+                      final endsAtExclusive = DateTime(
+                        picked.end.year,
+                        picked.end.month,
+                        picked.end.day,
+                      ).add(const Duration(days: 1));
+
+                      if (!endsAtExclusive.isAfter(now)) {
+                        if (!mounted) return;
+                        setState(() => _statusUiRevision++);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('תאריך הסיום צריך להיות היום או בעתיד.'),
+                          ),
+                        );
+                        return;
+                      }
+
+                      await StatusTimerService.instance.setAbroadSchedule(
+                        uid: uid,
+                        startsAt: startsAt,
+                        endsAtExclusive: endsAtExclusive,
+                      );
+                      if (!mounted) return;
+                      setState(() => _statusUiRevision++);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'מצב חו"ל נקבע ל־${_formatDate(startsAt)} עד ${_formatDate(endsAtExclusive.subtract(const Duration(days: 1)))}.',
+                          ),
+                        ),
+                      );
+                    } else if (value == ActivityStatus.meeting) {
                       final end = await showDialog<DateTime>(
                         context: context,
                         builder: (_) => const _StatusTimerDialog(
@@ -239,9 +326,12 @@ class _HomeScreenState extends State<HomeScreen> {
                         if (mounted) setState(() => _statusUiRevision++);
                         return;
                       }
+                      final previousForMeeting = activity == ActivityStatus.abroad
+                          ? activityFromString(profile['activity'] as String?)
+                          : activity;
                       await StatusTimerService.instance.startActivityTimer(
                         uid: uid,
-                        previous: activity,
+                        previous: previousForMeeting,
                         endsAt: end,
                       );
                       if (_automationOn) {
@@ -758,12 +848,16 @@ class _MyStatusCard extends StatelessWidget {
     super.key,
     required this.activity,
     required this.availability,
+    required this.abroadSchedule,
+    required this.onCancelAbroad,
     required this.onActivityChanged,
     required this.onAvailabilityChanged,
   });
 
   final ActivityStatus activity;
   final AvailabilityStatus availability;
+  final AbroadSchedule? abroadSchedule;
+  final Future<void> Function()? onCancelAbroad;
   final ValueChanged<ActivityStatus> onActivityChanged;
   final ValueChanged<AvailabilityStatus> onAvailabilityChanged;
 
@@ -802,6 +896,27 @@ class _MyStatusCard extends StatelessWidget {
                 if (value != null) onActivityChanged(value);
               },
             ),
+            if (abroadSchedule != null) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.flight_takeoff_outlined, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'חו"ל: ${_formatAbroadSchedule(abroadSchedule!)}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: onCancelAbroad == null
+                        ? null
+                        : () => unawaited(onCancelAbroad!()),
+                    child: const Text('בטל'),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 12),
             DropdownButtonFormField<AvailabilityStatus>(
               initialValue: availability,
@@ -964,12 +1079,13 @@ class _FriendTileState extends State<_FriendTile> {
         final activityTimerEnd = StatusTimerService.activeActivityTimerEnd(profile);
         final availabilityTimerEnd =
             StatusTimerService.activeAvailabilityTimerEnd(profile);
+        final activeAbroad = StatusTimerService.activeAbroadSchedule(profile);
         final hasTimer = activityTimerEnd != null || availabilityTimerEnd != null;
 
         return Card(
           child: ListTile(
             onTap: () => _callFriend(context, displayName),
-            isThreeLine: hasTimer,
+            isThreeLine: hasTimer || activeAbroad != null,
             leading: _FriendAvatar(
               name: displayName,
               photoUrl: photoUrl,
@@ -989,6 +1105,11 @@ class _FriendTileState extends State<_FriendTile> {
                 if (availabilityTimerEnd != null)
                   Text(
                     '⏱ נא לא להפריע ${_timerText(availabilityTimerEnd)}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                if (activeAbroad != null)
+                  Text(
+                    '✈️ ${_formatAbroadSchedule(activeAbroad)}',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
               ],
