@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import '../models/status_models.dart';
 import 'automation_preferences.dart';
 import 'automatic_status_service.dart';
+import 'debug_log_service.dart';
 import 'status_timer_service.dart';
 import 'user_repository.dart';
 
@@ -22,6 +23,8 @@ class LocationStatusService {
   bool _zonesEnabled = true;
   bool _awayEnabled = true;
   ActivityStatus _lastNonDriving = ActivityStatus.home;
+  DateTime? _lastDebugPositionAt;
+  String? _lastDebugZoneDecision;
 
   bool get running => _subscription != null;
 
@@ -33,6 +36,7 @@ class LocationStatusService {
   void noteManualActivity(ActivityStatus activity) {
     if (activity != ActivityStatus.driving) {
       _lastNonDriving = activity;
+      _debug('manual_activity_noted', {'activity': activity.name});
     }
   }
 
@@ -46,13 +50,23 @@ class LocationStatusService {
     _zonesEnabled = featureSettings.zones;
     _awayEnabled = featureSettings.away;
 
+    _debug('start_requested', {
+      'currentActivity': currentActivity.name,
+      'drivingEnabled': _drivingEnabled,
+      'zonesEnabled': _zonesEnabled,
+      'awayEnabled': _awayEnabled,
+      'alreadyRunning': _subscription != null,
+    });
+
     if (!featureSettings.locationEnabled) {
       await stop();
+      _debug('start_skipped_location_features_off');
       return;
     }
 
     if (_subscription != null) {
       _uid = uid;
+      _debug('start_reused_existing_stream');
       return;
     }
 
@@ -63,7 +77,10 @@ class LocationStatusService {
     }
 
     final enabled = await Geolocator.isLocationServiceEnabled();
-    if (!enabled) throw Exception('שירותי המיקום כבויים');
+    if (!enabled) {
+      _debug('start_failed_location_service_off');
+      throw Exception('שירותי המיקום כבויים');
+    }
 
     var permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
@@ -71,8 +88,10 @@ class LocationStatusService {
     }
     if (permission == LocationPermission.denied ||
         permission == LocationPermission.deniedForever) {
+      _debug('start_failed_location_permission', {'permission': permission.name});
       throw Exception('אין הרשאת מיקום');
     }
+    _debug('location_permission_ok', {'permission': permission.name});
 
     final LocationSettings settings;
     if (defaultTargetPlatform == TargetPlatform.android) {
@@ -91,9 +110,6 @@ class LocationStatusService {
               'זיהוי פעיל: ${activeParts.join(' + ')}. Matzav משתמשת ב־GPS לעדכון הסטטוס.',
           notificationChannelName: 'זיהוי מיקום אוטומטי',
           setOngoing: true,
-          // Keep the CPU available for background GPS processing. Without this,
-          // some devices become very aggressive when the screen is off and the
-          // Flutter location stream can appear to stop for long periods.
           enableWakeLock: true,
           enableWifiLock: false,
         ),
@@ -107,18 +123,18 @@ class LocationStatusService {
 
     _fastSamples = 0;
     _slowSamples = 0;
+    _lastDebugPositionAt = null;
+    _lastDebugZoneDecision = null;
 
     _subscription = Geolocator.getPositionStream(locationSettings: settings)
         .listen(
           _handlePosition,
-          // Do not cancel the entire automatic-location service on one
-          // transient provider/GPS error. The previous code did that, leaving
-          // driving/home/away detection dead until the app was restarted.
-          onError: (_) {},
+          onError: (Object error) {
+            _debug('position_stream_error', {'error': error.toString()});
+          },
         );
 
-    // Evaluate immediately as well. This makes home/away react when automation
-    // starts instead of waiting for the first streaming update to arrive.
+    _debug('position_stream_started');
     unawaited(_evaluateCurrentPosition());
   }
 
@@ -129,9 +145,10 @@ class LocationStatusService {
           accuracy: LocationAccuracy.high,
         ),
       );
+      _debug('initial_position_received', _positionData(position));
       await _handlePosition(position);
-    } catch (_) {
-      // The continuous stream remains active and may recover on its own.
+    } catch (error) {
+      _debug('initial_position_failed', {'error': error.toString()});
     }
   }
 
@@ -142,13 +159,19 @@ class LocationStatusService {
     final featureSettings = await AutomationPreferences.instance.load();
     var activityForRestart = currentActivity;
 
-    // If driving was the automatic temporary state and the user switches that
-    // detector off, do not leave the public profile stuck on "driving".
+    _debug('refresh', {
+      'currentActivity': currentActivity.name,
+      'drivingEnabled': featureSettings.driving,
+      'zonesEnabled': featureSettings.zones,
+      'awayEnabled': featureSettings.away,
+    });
+
     if (!featureSettings.driving && currentActivity == ActivityStatus.driving) {
       activityForRestart = await StatusTimerService.instance.resolveActivityReturn(
         uid,
         _lastNonDriving,
       );
+      _debug('driving_disabled_restore', {'activity': activityForRestart.name});
       await UserRepository.instance.updateStatus(
         uid: uid,
         activity: activityForRestart,
@@ -164,6 +187,12 @@ class LocationStatusService {
   }
 
   Future<void> stop({bool rememberOff = false}) async {
+    _debug('stop', {
+      'rememberOff': rememberOff,
+      'wasRunning': _subscription != null,
+      'wasDriving': _driving,
+      'lastNonDriving': _lastNonDriving.name,
+    });
     await _subscription?.cancel();
     _subscription = null;
     _uid = null;
@@ -178,15 +207,28 @@ class LocationStatusService {
     final uid = _uid;
     if (uid == null) return;
 
-    // Phone-call and sleep overrides take priority over location automation.
-    // Ask Android for the current value instead of trusting a possibly stale
-    // Flutter-side cache left over from a call that already ended in background.
-    if (await AutomaticStatusService.instance.isOverrideActiveNow()) return;
+    final now = DateTime.now();
+    if (_lastDebugPositionAt == null ||
+        now.difference(_lastDebugPositionAt!) >= const Duration(seconds: 30)) {
+      _lastDebugPositionAt = now;
+      _debug('position_sample', {
+        ..._positionData(position),
+        'drivingLocal': _driving,
+        'fastSamples': _fastSamples,
+        'slowSamples': _slowSamples,
+        'lastNonDriving': _lastNonDriving.name,
+      });
+    }
 
-    // A few slow GPS samples at a traffic light must not undo an Android
-    // IN_VEHICLE transition. Native monitoring also survives a detached UI.
+    if (await AutomaticStatusService.instance.isOverrideActiveNow()) {
+      return;
+    }
+
     if (_drivingEnabled &&
         await AutomaticStatusService.instance.isNativeDrivingActive()) {
+      if (!_driving) {
+        _debug('native_driving_blocks_gps_exit', _positionData(position));
+      }
       _driving = true;
       _fastSamples = 0;
       _slowSamples = 0;
@@ -196,9 +238,6 @@ class LocationStatusService {
     final speed = position.speed;
 
     if (_drivingEnabled) {
-      // Position.speed is meters/second.
-      // >= 8.3 m/s is ~30 km/h: a single reading is enough to react quickly.
-      // >= 5.5 m/s is ~20 km/h: require two consecutive readings.
       if (speed >= 8.3) {
         _fastSamples = 2;
         _slowSamples = 0;
@@ -215,6 +254,10 @@ class LocationStatusService {
 
       if (!_driving && _fastSamples >= 2) {
         _driving = true;
+        _debug('gps_enter_driving', {
+          ..._positionData(position),
+          'fastSamples': _fastSamples,
+        });
         await UserRepository.instance.updateStatus(
           uid: uid,
           activity: ActivityStatus.driving,
@@ -222,8 +265,6 @@ class LocationStatusService {
         return;
       }
 
-      // With a 5-second Android interval, three slow samples means roughly
-      // 15 seconds stopped before leaving driving mode.
       if (_driving && _slowSamples >= 3) {
         _driving = false;
         final fallback = await StatusTimerService.instance.resolveActivityReturn(
@@ -239,6 +280,13 @@ class LocationStatusService {
             ? ActivityStatus.meeting
             : (locationActivity ?? fallback);
         _lastNonDriving = nextActivity;
+        _debug('gps_exit_driving', {
+          ..._positionData(position),
+          'slowSamples': _slowSamples,
+          'fallback': fallback.name,
+          'locationActivity': locationActivity?.name,
+          'nextActivity': nextActivity.name,
+        });
         await UserRepository.instance.updateStatus(
           uid: uid,
           activity: nextActivity,
@@ -246,8 +294,6 @@ class LocationStatusService {
         return;
       }
 
-      // Avoid a short "not home" flash while two medium-speed samples are
-      // accumulating and the device is about to enter driving mode.
       if (!_driving && speed >= 5.5) return;
     } else {
       _fastSamples = 0;
@@ -257,8 +303,6 @@ class LocationStatusService {
 
     if (_driving || (!_zonesEnabled && !_awayEnabled)) return;
 
-    // A manually selected meeting with a timer temporarily takes priority over
-    // all GPS-derived statuses.
     if (await StatusTimerService.instance.isMeetingTimerActive()) return;
 
     final fallback = await StatusTimerService.instance.resolveActivityReturn(
@@ -271,7 +315,13 @@ class LocationStatusService {
 
     final locationActivity = await _activityForLocation(uid, position);
     if (locationActivity != null && locationActivity != _lastNonDriving) {
+      final previous = _lastNonDriving;
       _lastNonDriving = locationActivity;
+      _debug('location_status_change', {
+        ..._positionData(position),
+        'from': previous.name,
+        'to': locationActivity.name,
+      });
       await UserRepository.instance.updateStatus(
         uid: uid,
         activity: locationActivity,
@@ -284,42 +334,83 @@ class LocationStatusService {
     Position position,
   ) async {
     final zones = await UserRepository.instance.getZones(uid);
-
-    // Always know whether home is configured when "not home" detection is on.
-    // Without a saved home location we cannot safely conclude that the user is
-    // away, so the detector does nothing until home has been saved.
     final home = _readZone(zones['home']);
+    final work = _readZone(zones['work']);
+    final hobby = _readZone(zones['hobby']);
+    final dogWalk = _readZone(zones['dogWalk']);
+
     final isHome = home != null && _inside(position, home);
+    ActivityStatus? decision;
 
     if (_zonesEnabled) {
-      // Home wins if zones overlap. Other configured locations then provide a
-      // more useful status than the generic "not home" value.
-      if (isHome) return ActivityStatus.home;
-
-      final work = _readZone(zones['work']);
-      if (work != null && _inside(position, work)) {
-        return ActivityStatus.work;
-      }
-
-      final hobby = _readZone(zones['hobby']);
-      if (hobby != null && _inside(position, hobby)) {
-        return ActivityStatus.hobby;
-      }
-
-      final dogWalk = _readZone(zones['dogWalk']);
-      if (dogWalk != null && _inside(position, dogWalk)) {
-        return ActivityStatus.dogWalk;
+      if (isHome) {
+        decision = ActivityStatus.home;
+      } else if (work != null && _inside(position, work)) {
+        decision = ActivityStatus.work;
+      } else if (hobby != null && _inside(position, hobby)) {
+        decision = ActivityStatus.hobby;
+      } else if (dogWalk != null && _inside(position, dogWalk)) {
+        decision = ActivityStatus.dogWalk;
       }
     } else if (_awayEnabled && isHome) {
-      // "Not home" can operate independently from the other named zones.
-      return ActivityStatus.home;
+      decision = ActivityStatus.home;
     }
 
-    if (_awayEnabled && home != null && !isHome) {
-      return ActivityStatus.away;
+    if (decision == null && _awayEnabled && home != null && !isHome) {
+      decision = ActivityStatus.away;
     }
 
-    return null;
+    final decisionKey = decision?.name ?? 'none';
+    if (_lastDebugZoneDecision != decisionKey) {
+      _lastDebugZoneDecision = decisionKey;
+      _debug('zone_decision', {
+        'decision': decisionKey,
+        'lat': position.latitude,
+        'lng': position.longitude,
+        'accuracyM': position.accuracy,
+        'homeDistanceM': _distance(position, home),
+        'homeRadiusM': home?.radius,
+        'workDistanceM': _distance(position, work),
+        'hobbyDistanceM': _distance(position, hobby),
+        'dogWalkDistanceM': _distance(position, dogWalk),
+        'zonesEnabled': _zonesEnabled,
+        'awayEnabled': _awayEnabled,
+      });
+    }
+
+    return decision;
+  }
+
+  Map<String, Object?> _positionData(Position position) {
+    return {
+      'lat': double.parse(position.latitude.toStringAsFixed(6)),
+      'lng': double.parse(position.longitude.toStringAsFixed(6)),
+      'accuracyM': double.parse(position.accuracy.toStringAsFixed(1)),
+      'speedKmh': double.parse((position.speed * 3.6).toStringAsFixed(1)),
+      'positionTime': position.timestamp.toIso8601String(),
+    };
+  }
+
+  double? _distance(Position position, _SavedZone? zone) {
+    if (zone == null) return null;
+    return double.parse(
+      Geolocator.distanceBetween(
+        position.latitude,
+        position.longitude,
+        zone.lat,
+        zone.lng,
+      ).toStringAsFixed(1),
+    );
+  }
+
+  void _debug(String event, [Map<String, Object?> data = const {}]) {
+    unawaited(
+      DebugLogService.instance.log(
+        'location',
+        event,
+        data: data,
+      ),
+    );
   }
 
   _SavedZone? _readZone(dynamic raw) {
