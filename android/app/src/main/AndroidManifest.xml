@@ -40,6 +40,13 @@
             android:authorities="${applicationId}.native-driving"
             android:exported="false"
             android:initOrder="70" />
+        <!-- Keeps a local-only rolling snapshot of native automatic state so a
+             user can explicitly export diagnostics after a wrong/stuck status. -->
+        <provider
+            android:name=".NativeDiagnosticsProvider"
+            android:authorities="${applicationId}.native-diagnostics"
+            android:exported="false"
+            android:initOrder="60" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
