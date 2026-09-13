@@ -7,6 +7,7 @@ import '../models/status_models.dart';
 import '../services/ads_service.dart';
 import '../services/automation_preferences.dart';
 import '../services/automatic_status_service.dart';
+import '../services/diagnostic_export_service.dart';
 import '../services/location_status_service.dart';
 import '../services/premium_service.dart';
 import '../services/user_repository.dart';
@@ -52,6 +53,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _busy = false;
   bool _loadingZones = true;
   bool _automationBusy = false;
+  bool _diagnosticBusy = false;
   AutomationFeatureSettings _automation = const AutomationFeatureSettings(
     driving: true,
     zones: true,
@@ -202,6 +204,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
       SnackBar(
         content: Text('לא ניתן לפתוח את הגדרות הפרטיות: ${error.message}'),
       ),
+    );
+  }
+
+  Future<void> _shareDiagnostics() async {
+    if (_diagnosticBusy) return;
+    setState(() => _diagnosticBusy = true);
+    try {
+      await DiagnosticExportService.instance.shareReport(uid);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('לא ניתן לייצא את דוח הדיבוג: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _diagnosticBusy = false);
+    }
+  }
+
+  Future<void> _copyDiagnostics() async {
+    if (_diagnosticBusy) return;
+    setState(() => _diagnosticBusy = true);
+    try {
+      await DiagnosticExportService.instance.copyReport(uid);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('דוח הדיבוג הועתק ללוח.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('לא ניתן להעתיק את דוח הדיבוג: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _diagnosticBusy = false);
+    }
+  }
+
+  Future<void> _clearDiagnostics() async {
+    await DiagnosticExportService.instance.clearLogs();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('היסטוריית הדיבוג נוקתה.')),
     );
   }
 
@@ -484,6 +528,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const Center(child: CircularProgressIndicator()),
           ],
           const SizedBox(height: 24),
+          Text(
+            'אבחון תקלות',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.bug_report_outlined),
+                  title: const Text('ייצוא דוח דיבוג'),
+                  subtitle: const Text(
+                    'אם המצב שגוי או תקוע, לחץ מיד ושלח את הדוח. הוא כולל '
+                    'מצב נוכחי, הרשאות, GPS/מהירות, מרחק מהאזורים והיסטוריית '
+                    'אירועי זיהוי אחרונים. שום דבר לא נשלח אוטומטית.',
+                  ),
+                  trailing: _diagnosticBusy
+                      ? const SizedBox.square(
+                          dimension: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.share_outlined),
+                  onTap: _diagnosticBusy ? null : _shareDiagnostics,
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.copy_outlined),
+                  title: const Text('העתק דוח ללוח'),
+                  subtitle: const Text('שימושי אם רוצים להדביק את הדוח ישירות בצ׳אט.'),
+                  onTap: _diagnosticBusy ? null : _copyDiagnostics,
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.delete_sweep_outlined),
+                  title: const Text('נקה היסטוריית דיבוג'),
+                  onTap: _diagnosticBusy ? null : _clearDiagnostics,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
           const Card(
             child: Padding(
               padding: EdgeInsets.all(16),
