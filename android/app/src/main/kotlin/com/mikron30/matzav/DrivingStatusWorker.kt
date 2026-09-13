@@ -20,12 +20,17 @@ class DrivingStatusWorker(context: Context, parameters: WorkerParameters) : Work
         val owner = inputData.getString(NativeDrivingMonitor.KEY_OWNER) ?: return Result.success()
         val state = NativeDrivingMonitor.prefs(applicationContext)
         if (state.getString(NativeDrivingMonitor.KEY_OWNER, null) != owner) return Result.success()
-        val user = FirebaseAuth.getInstance().currentUser ?: return Result.retry()
+        val user = FirebaseAuth.getInstance().currentUser ?: run {
+            recordResult(state, "auth_missing_retry")
+            return Result.retry()
+        }
         if (user.uid != owner) return Result.success()
         val revision = state.getLong(NativeDrivingMonitor.KEY_REVISION, 0L)
         val fallback = state.getString("previous_activity", null)
             ?: state.getString("last_non_driving", "home") ?: "home"
         val ref = FirebaseFirestore.getInstance().collection("profiles").document(owner)
+
+        recordResult(state, "running")
 
         try {
             val outcome = Tasks.await(FirebaseFirestore.getInstance().runTransaction { transaction ->
@@ -60,6 +65,8 @@ class DrivingStatusWorker(context: Context, parameters: WorkerParameters) : Work
                 SyncOutcome("applied", returnActivity?.takeIf { DrivingStatusPolicy.stable(it) })
             }, 20, TimeUnit.SECONDS)
 
+            recordResult(state, outcome.kind)
+
             if (outcome.kind == "missing") return Result.retry()
 
             if (outcome.kind == "applied") {
@@ -69,8 +76,25 @@ class DrivingStatusWorker(context: Context, parameters: WorkerParameters) : Work
             return Result.success()
         } catch (error: Exception) {
             if (error is InterruptedException) Thread.currentThread().interrupt()
+            recordResult(state, "error_retry", error.message ?: error.javaClass.simpleName)
             Log.w("MatzavDriving", "Vehicle status sync will retry", error)
             return Result.retry()
         }
+    }
+
+    private fun recordResult(
+        state: android.content.SharedPreferences,
+        result: String,
+        error: String? = null,
+    ) {
+        val editor = state.edit()
+            .putString("last_sync_result", result)
+            .putLong("last_sync_at", System.currentTimeMillis())
+        if (error == null) {
+            editor.remove("last_sync_error")
+        } else {
+            editor.putString("last_sync_error", error.take(400))
+        }
+        editor.apply()
     }
 }
