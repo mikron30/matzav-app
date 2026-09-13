@@ -88,6 +88,9 @@ class NativeDiagnosticsProvider : ContentProvider(),
                 put("revision", drive.getLong("revision", 0L))
                 put("previousActivity", drive.getString("previous_activity", null) ?: "none")
                 put("lastNonDriving", drive.getString("last_non_driving", null) ?: "none")
+                put("lastSyncResult", drive.getString("last_sync_result", null) ?: "none")
+                put("lastSyncAt", drive.getLong("last_sync_at", 0L))
+                put("lastSyncError", drive.getString("last_sync_error", null) ?: "none")
             })
 
             put("automatic", JSONObject().apply {
@@ -126,6 +129,8 @@ class NativeDiagnosticsProvider : ContentProvider(),
             append(drive.getBoolean("pending_sync", false))
             append(" rev=")
             append(drive.getLong("revision", 0L))
+            append(" sync=")
+            append(drive.getString("last_sync_result", null) ?: "-")
             append(" prev=")
             append(drive.getString("previous_activity", null) ?: "-")
             append(" last=")
