@@ -227,9 +227,32 @@ class LocationStatusService {
     if (_drivingEnabled &&
         await AutomaticStatusService.instance.isNativeDrivingActive()) {
       if (!_driving) {
-        _debug('native_driving_blocks_gps_exit', _positionData(position));
+        _driving = true;
+        _debug('native_driving_recovery_publish', _positionData(position));
+
+        // Native detection may be correct even when its WorkManager Firestore
+        // transaction is backed off because DNS/network was temporarily down.
+        // Mirror the state through Flutter as well. Firestore's client cache
+        // makes the local UI react immediately and keeps the write pending for
+        // the next connection, while Android also gets a fresh native retry.
+        unawaited(
+          UserRepository.instance
+              .updateStatus(uid: uid, activity: ActivityStatus.driving)
+              .then(
+                (_) => _debug(
+                  'native_driving_recovery_publish_done',
+                  _positionData(position),
+                ),
+              )
+              .catchError(
+                (Object error) => _debug(
+                  'native_driving_recovery_publish_failed',
+                  {'error': error.toString(), ..._positionData(position)},
+                ),
+              ),
+        );
+        unawaited(AutomaticStatusService.instance.requestNativeDrivingSync());
       }
-      _driving = true;
       _fastSamples = 0;
       _slowSamples = 0;
       return;
