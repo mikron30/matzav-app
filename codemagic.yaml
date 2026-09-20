@@ -12,7 +12,6 @@ workflows:
         BUNDLE_ID: com.mikron30.matzav
       flutter: stable
       xcode: latest
-      cocoapods: default
 
     scripts:
       - name: Validate Firebase configuration
