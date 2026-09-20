@@ -5,8 +5,6 @@ workflows:
     integrations:
       app_store_connect: Codemagic matzav
     environment:
-      groups:
-        - firebase_ios
       vars:
         BUNDLE_ID: com.mikron30.matzav
       flutter: stable
@@ -14,18 +12,11 @@ workflows:
       cocoapods: default
 
     scripts:
-      - name: Restore Firebase configuration
+      - name: Validate Firebase configuration
         script: |
-          if [ -z "${GOOGLE_SERVICE_INFO_PLIST_BASE64:-}" ]; then
-            echo "GOOGLE_SERVICE_INFO_PLIST_BASE64 is missing"
-            exit 1
-          fi
-          if [ -z "${FIREBASE_OPTIONS_DART_BASE64:-}" ]; then
-            echo "FIREBASE_OPTIONS_DART_BASE64 is missing"
-            exit 1
-          fi
-          echo "$GOOGLE_SERVICE_INFO_PLIST_BASE64" | base64 --decode > ios/Runner/GoogleService-Info.plist
-          echo "$FIREBASE_OPTIONS_DART_BASE64" | base64 --decode > lib/firebase_options.dart
+          test -f ios/Runner/GoogleService-Info.plist
+          test -f lib/firebase_options.dart
+          /usr/libexec/PlistBuddy -c 'Print :BUNDLE_ID' ios/Runner/GoogleService-Info.plist | grep -Fx "$BUNDLE_ID"
 
       - name: Install Flutter dependencies
         script: flutter pub get
@@ -44,7 +35,7 @@ workflows:
 
       - name: Build IPA
         script: |
-          flutter build ipa --release --build-number="$BUILD_NUMBER"
+          flutter build ipa --release --build-name=1.0 --build-number="$BUILD_NUMBER"
 
     artifacts:
       - build/ios/ipa/*.ipa
