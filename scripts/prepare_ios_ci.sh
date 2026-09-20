@@ -22,6 +22,47 @@ fi
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Matzav" "$INFO_PLIST" || true
 
+# Keep the iOS app icon visually identical to the Android Matzav launcher icon.
+# Apple requires a complete AppIcon set; generate every required PNG on the
+# Codemagic macOS builder from the checked-in Android launcher artwork.
+ANDROID_ICON="android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"
+APPICON_DIR="ios/Runner/Assets.xcassets/AppIcon.appiconset"
+
+if [[ ! -f "$ANDROID_ICON" ]]; then
+  echo "Missing Android launcher icon: $ANDROID_ICON"
+  exit 1
+fi
+
+mkdir -p "$APPICON_DIR"
+
+generate_app_icon() {
+  local pixels="$1"
+  local filename="$2"
+  sips -z "$pixels" "$pixels" "$ANDROID_ICON" --out "$APPICON_DIR/$filename" >/dev/null
+}
+
+generate_app_icon 40   "Icon-App-20x20@2x.png"
+generate_app_icon 60   "Icon-App-20x20@3x.png"
+generate_app_icon 29   "Icon-App-29x29@1x.png"
+generate_app_icon 58   "Icon-App-29x29@2x.png"
+generate_app_icon 87   "Icon-App-29x29@3x.png"
+generate_app_icon 80   "Icon-App-40x40@2x.png"
+generate_app_icon 120  "Icon-App-40x40@3x.png"
+generate_app_icon 120  "Icon-App-60x60@2x.png"
+generate_app_icon 180  "Icon-App-60x60@3x.png"
+generate_app_icon 20   "Icon-App-20x20@1x.png"
+generate_app_icon 40   "Icon-App-20x20@2x.png"
+generate_app_icon 29   "Icon-App-29x29@1x.png"
+generate_app_icon 58   "Icon-App-29x29@2x.png"
+generate_app_icon 40   "Icon-App-40x40@1x.png"
+generate_app_icon 80   "Icon-App-40x40@2x.png"
+generate_app_icon 76   "Icon-App-76x76@1x.png"
+generate_app_icon 152  "Icon-App-76x76@2x.png"
+generate_app_icon 167  "Icon-App-83.5x83.5@2x.png"
+generate_app_icon 1024 "Icon-App-1024x1024@1x.png"
+
+echo "Generated iOS AppIcon set from Android Matzav icon."
+
 if [[ ! -f "$FIREBASE_PLIST" ]]; then
   echo "Missing $FIREBASE_PLIST"
   echo "Add the Firebase iOS GoogleService-Info.plist before building."
