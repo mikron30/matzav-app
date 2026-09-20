@@ -2,9 +2,10 @@ workflows:
   ios-production:
     name: Matzav iOS production
     max_build_duration: 60
+    integrations:
+      app_store_connect: Codemagic matzav
     environment:
       groups:
-        - appstore_credentials
         - firebase_ios
       vars:
         BUNDLE_ID: com.mikron30.matzav
@@ -51,7 +52,5 @@ workflows:
 
     publishing:
       app_store_connect:
-        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
-        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
-        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        auth: integration
         submit_to_testflight: false
