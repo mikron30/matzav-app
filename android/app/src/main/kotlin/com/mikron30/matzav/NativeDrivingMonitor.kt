@@ -197,10 +197,12 @@ object NativeDrivingMonitor {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
         }
-        // Serialize updates. Each worker reads the latest persisted state, so a
-        // queued ENTER cannot replay an old trip after EXIT while offline.
+        // Every worker reads the latest persisted state, so replacing an older
+        // backed-off job is safe. REPLACE is important here: APPEND_OR_REPLACE
+        // can leave a fresh ENTER/EXIT waiting behind an old Firestore/DNS retry
+        // for a long time, even after connectivity has recovered.
         return WorkManager.getInstance(context).enqueueUniqueWork(
-            workName(owner), ExistingWorkPolicy.APPEND_OR_REPLACE, builder.build())
+            workName(owner), ExistingWorkPolicy.REPLACE, builder.build())
     }
 
     fun callOrSleepActive(context: Context): Boolean {
