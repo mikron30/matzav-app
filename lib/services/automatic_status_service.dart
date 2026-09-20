@@ -114,6 +114,19 @@ class AutomaticStatusService {
     }
   }
 
+  /// Ask Android to publish the latest persisted IN_VEHICLE state again.
+  /// Used as a recovery path when a previous native Firestore transaction was
+  /// delayed by temporary DNS/network failure.
+  Future<void> requestNativeDrivingSync() async {
+    try {
+      await _channel.invokeMethod<void>('syncDrivingStatus');
+    } on MissingPluginException {
+      // Android-only feature.
+    } on PlatformException {
+      // The persisted native state remains available for a later retry.
+    }
+  }
+
   Future<void> stop() async {
     try {
       await _channel.invokeMethod<void>('stopMonitoring');
