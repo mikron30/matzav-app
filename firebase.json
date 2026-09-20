@@ -1,27 +1,36 @@
 {
-    "flutter":  {
-                    "platforms":  {
-                                      "android":  {
-                                                      "default":  {
-                                                                      "projectId":  "matsav-app",
-                                                                      "appId":  "1:132247657839:android:6552df2485b80d55bedc9a",
-                                                                      "fileOutput":  "android/app/google-services.json"
-                                                                  }
-                                                  },
-                                      "dart":  {
-                                                   "lib/firebase_options.dart":  {
-                                                                                     "projectId":  "matsav-app",
-                                                                                     "configurations":  {
-                                                                                                            "android":  "1:132247657839:android:6552df2485b80d55bedc9a"
-                                                                                                        }
-                                                                                 }
-                                               }
-                                  }
-                },
-    "firestore":  {
-                      "rules":  "firestore.rules"
-                  },
-    "functions":  {
-                      "source":  "functions"
-                  }
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "matsav-app",
+          "appId": "1:132247657839:android:6552df2485b80d55bedc9a",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "matsav-app",
+          "configurations": {
+            "android": "1:132247657839:android:6552df2485b80d55bedc9a",
+            "ios": "1:132247657839:ios:61cacdbf9a60c55ebedc9a"
+          }
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "matsav-app",
+          "appId": "1:132247657839:ios:61cacdbf9a60c55ebedc9a",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      }
+    }
+  },
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "functions": {
+    "source": "functions"
+  }
 }
