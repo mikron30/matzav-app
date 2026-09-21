@@ -290,8 +290,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       // Stop automatic publishers first so they cannot recreate a profile
       // during the short interval in which the server removes the account.
-      await LocationStatusService.instance.stop();
-      await AutomaticStatusService.instance.stop();
+      try {
+        await LocationStatusService.instance.stop();
+      } catch (_) {}
+      try {
+        await AutomaticStatusService.instance.stop();
+      } catch (_) {}
       await AccountDeletionService.instance.deleteCurrentAccount();
     } catch (error) {
       if (!mounted) return;
