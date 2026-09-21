@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/status_models.dart';
+import '../services/account_deletion_service.dart';
 import '../services/ads_service.dart';
 import '../services/automation_preferences.dart';
 import '../services/automatic_status_service.dart';
@@ -54,6 +55,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _loadingZones = true;
   bool _automationBusy = false;
   bool _diagnosticBusy = false;
+  bool _deletingAccount = false;
   AutomationFeatureSettings _automation = const AutomationFeatureSettings(
     driving: true,
     zones: true,
@@ -247,6 +249,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('היסטוריית הדיבוג נוקתה.')),
     );
+  }
+
+  Future<void> _confirmDeleteAccount() async {
+    if (_deletingAccount) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        final colors = Theme.of(dialogContext).colorScheme;
+        return AlertDialog(
+          title: const Text('מחיקת החשבון'),
+          content: const Text(
+            'הפעולה תמחק לצמיתות את חשבון Matzav, הפרופיל, הסטטוס, '
+            'המיקומים השמורים, רשימת החברים ובקשות ההתראה הקשורות לחשבון.\n\n'
+            'לא ניתן לבטל את הפעולה לאחר השלמתה. רכישות שבוצעו דרך App Store '
+            'או Google Play נשארות ברישומי החנות בהתאם למדיניות החנות.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('ביטול'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: colors.error,
+                foregroundColor: colors.onError,
+              ),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('מחק לצמיתות'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) return;
+    setState(() => _deletingAccount = true);
+
+    try {
+      // Stop automatic publishers first so they cannot recreate a profile
+      // during the short interval in which the server removes the account.
+      await LocationStatusService.instance.stop();
+      await AutomaticStatusService.instance.stop();
+      await AccountDeletionService.instance.deleteCurrentAccount();
+    } catch (error) {
+      if (!mounted) return;
+      final text = error.toString().replaceFirst('HttpException: ', '');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(text)),
+      );
+    } finally {
+      if (mounted) setState(() => _deletingAccount = false);
+    }
   }
 
   @override
@@ -568,6 +623,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onTap: _diagnosticBusy ? null : _clearDiagnostics,
                 ),
               ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'חשבון',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: ListTile(
+              leading: _deletingAccount
+                  ? const SizedBox.square(
+                      dimension: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(
+                      Icons.delete_forever_outlined,
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+              title: Text(
+                _deletingAccount ? 'מוחק את החשבון...' : 'מחק חשבון',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              subtitle: const Text(
+                'מחיקה לצמיתות של החשבון והנתונים הקשורים אליו.',
+              ),
+              onTap: _deletingAccount ? null : _confirmDeleteAccount,
             ),
           ),
           const SizedBox(height: 16),
