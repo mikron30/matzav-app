@@ -23,15 +23,35 @@ async function deleteQuery(query) {
 async function deleteAccountData(uid) {
   const db = admin.firestore();
 
-  // Remove references to this user from other users' friend lists.
-  await deleteQuery(
-    db.collectionGroup("friends").where("friendUid", "==", uid),
-  );
+  // Discover relationships first, then remove this user from each friend's
+  // own friend list without requiring a collection-group index.
+  const relationships = await db
+    .collection("friendships")
+    .where("members", "array-contains", uid)
+    .get();
+
+  for (const relationship of relationships.docs) {
+    const members = relationship.data()?.members;
+    if (!Array.isArray(members)) continue;
+    const friendUid = members.find((member) => member !== uid);
+    if (typeof friendUid !== "string" || friendUid.length === 0) continue;
+    await deleteQuery(
+      db
+        .collection("users")
+        .doc(friendUid)
+        .collection("friends")
+        .where("friendUid", "==", uid),
+    );
+  }
 
   // Remove friendship markers and old tombstones involving this user.
-  await deleteQuery(
-    db.collection("friendships").where("members", "array-contains", uid),
-  );
+  if (!relationships.empty) {
+    const writer = db.bulkWriter();
+    for (const relationship of relationships.docs) {
+      writer.delete(relationship.ref);
+    }
+    await writer.close();
+  }
   await deleteQuery(
     db.collection("friendship_tombstones").where(
       "members",
@@ -45,10 +65,18 @@ async function deleteAccountData(uid) {
     db.collection("public_ids").where("ownerUid", "==", uid),
   );
 
-  // Remove one-shot notification requests created by this user.
-  await deleteQuery(
-    db.collectionGroup("waiters").where("requesterUid", "==", uid),
-  );
+  // Remove one-shot notification requests created by this user. Requester
+  // documents are keyed by uid, so this works without collection-group queries.
+  for (const collectionName of ["call_waits", "driving_waits"]) {
+    const targets = await db.collection(collectionName).listDocuments();
+    const writer = db.bulkWriter();
+    for (const target of targets) {
+      if (target.id !== uid) {
+        writer.delete(target.collection("waiters").doc(uid));
+      }
+    }
+    await writer.close();
+  }
 
   // Remove the user's own data, including nested friends and waiter queues
   // where this user was the notification target.
