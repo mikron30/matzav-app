@@ -39,11 +39,10 @@ class AutomaticStatusService {
     try {
       final current =
           await _channel.invokeMethod<String>('getCurrentOverride') ?? 'none';
-      _currentOverride = switch (current) {
-        'onCall' when _callsEnabled => ActivityStatus.onCall.name,
-        'sleeping' when _sleepEnabled => ActivityStatus.sleeping.name,
-        _ => 'none',
-      };
+      // Do not merely update the in-memory flag. If Android has already returned
+      // to "none" while a previous automatic onCall/sleeping write is still in
+      // Firestore, reconcile it here before location automation continues.
+      await _applyOverride(current, reconcileStaleCloud: true);
     } on MissingPluginException {
       // Android-only feature. Keep the last known state on other platforms.
     } on PlatformException {
@@ -91,7 +90,7 @@ class AutomaticStatusService {
       });
       final current =
           await _channel.invokeMethod<String>('getCurrentOverride') ?? 'none';
-      await _applyOverride(current);
+      await _applyOverride(current, reconcileStaleCloud: true);
     } on MissingPluginException {
       // Android-only feature.
     } on PlatformException {
@@ -139,18 +138,16 @@ class AutomaticStatusService {
     _uid = null;
   }
 
-  Future<void> _applyOverride(String next) async {
+  Future<void> _applyOverride(
+    String next, {
+    bool reconcileStaleCloud = false,
+  }) async {
+    final normalized = _normalizeOverride(next);
     final uid = _uid;
     if (uid == null) {
-      _currentOverride = next;
+      _currentOverride = normalized;
       return;
     }
-
-    final normalized = switch (next) {
-      'onCall' when _callsEnabled => ActivityStatus.onCall.name,
-      'sleeping' when _sleepEnabled => ActivityStatus.sleeping.name,
-      _ => 'none',
-    };
 
     final prefs = await SharedPreferences.getInstance();
     final previousOverride =
@@ -163,6 +160,8 @@ class AutomaticStatusService {
             ? ActivityStatus.onCall
             : ActivityStatus.sleeping;
         await BusyAvailabilityService.instance.syncForActivity(uid, activity);
+      } else if (reconcileStaleCloud) {
+        await _restoreStaleCloudOverrideIfNeeded(uid, prefs);
       }
       return;
     }
@@ -194,27 +193,7 @@ class AutomaticStatusService {
         automaticActivity,
       );
     } else {
-      final previousName = prefs.getString(_previousActivityKey);
-      var previous = activityFromString(previousName);
-      // A trip can start/end while a call owns the visible status. Do not
-      // restore an old "driving" value after Android already detected EXIT.
-      try {
-        if (await isNativeDrivingActive()) {
-          previous = ActivityStatus.driving;
-        } else if (previous == ActivityStatus.driving) {
-          final nativeReturn =
-              await _channel.invokeMethod<String>('drivingReturnActivity');
-          if (nativeReturn != null) previous = activityFromString(nativeReturn);
-        }
-      } on MissingPluginException {
-        // Other platforms keep their existing restoration behavior.
-      } on PlatformException {
-        // Fall back to the saved status if Android is temporarily unavailable.
-      }
-      previous = await StatusTimerService.instance.resolveActivityReturn(
-        uid,
-        previous,
-      );
+      final previous = await _resolveReturnActivity(uid, prefs);
       await UserRepository.instance.updateStatus(
         uid: uid,
         activity: previous,
@@ -235,6 +214,78 @@ class AutomaticStatusService {
       } on PlatformException {
         // Persisted native transitions still have their WorkManager retry.
       }
+    }
+  }
+
+  String _normalizeOverride(String value) {
+    return switch (value) {
+      'onCall' when _callsEnabled => ActivityStatus.onCall.name,
+      'sleeping' when _sleepEnabled => ActivityStatus.sleeping.name,
+      _ => 'none',
+    };
+  }
+
+  Future<ActivityStatus> _resolveReturnActivity(
+    String uid,
+    SharedPreferences prefs,
+  ) async {
+    final previousName = prefs.getString(_previousActivityKey);
+    var previous = activityFromString(previousName);
+
+    // A trip can start/end while a call owns the visible status. Do not restore
+    // an old "driving" value after Android already detected EXIT.
+    try {
+      if (await isNativeDrivingActive()) {
+        previous = ActivityStatus.driving;
+      } else if (previous == ActivityStatus.driving) {
+        final nativeReturn =
+            await _channel.invokeMethod<String>('drivingReturnActivity');
+        if (nativeReturn != null) previous = activityFromString(nativeReturn);
+      }
+    } on MissingPluginException {
+      // Other platforms keep their existing restoration behavior.
+    } on PlatformException {
+      // Fall back to the saved status if Android is temporarily unavailable.
+    }
+
+    return StatusTimerService.instance.resolveActivityReturn(uid, previous);
+  }
+
+  Future<void> _restoreStaleCloudOverrideIfNeeded(
+    String uid,
+    SharedPreferences prefs,
+  ) async {
+    // This local marker is written only when Matzav itself entered an automatic
+    // temporary override. Its presence lets us repair a stale cloud onCall/
+    // sleeping state without changing a status the user selected manually.
+    final previousName = prefs.getString(_previousActivityKey);
+    if (previousName == null || previousName.isEmpty) return;
+
+    final snapshot = await UserRepository.instance.profileStream(uid).first;
+    final current = activityFromString(snapshot.data()?['activity'] as String?);
+
+    if (current != ActivityStatus.onCall &&
+        current != ActivityStatus.sleeping) {
+      await prefs.remove(_previousActivityKey);
+      return;
+    }
+
+    final previous = await _resolveReturnActivity(uid, prefs);
+    await UserRepository.instance.updateStatus(
+      uid: uid,
+      activity: previous,
+    );
+    await BusyAvailabilityService.instance.syncForActivity(uid, previous);
+    await prefs.remove(_previousActivityKey);
+    await prefs.setString(_lastOverrideKey, 'none');
+    _currentOverride = 'none';
+
+    try {
+      await _channel.invokeMethod<void>('syncDrivingStatus');
+    } on MissingPluginException {
+      // Android-only feature.
+    } on PlatformException {
+      // Persisted native transitions still have their WorkManager retry.
     }
   }
 }

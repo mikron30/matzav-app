@@ -17,6 +17,9 @@ class DiagnosticExportService {
 
   static const _nativeSnapshotKey = 'matzav_native_debug_snapshot_v47';
   static const _nativeLogKey = 'matzav_native_debug_log_v47';
+  static const MethodChannel _automaticStatusChannel = MethodChannel(
+    'com.mikron30.matzav/automatic_status',
+  );
 
   Future<String> buildReport(String uid) async {
     final createdAt = DateTime.now();
@@ -30,6 +33,7 @@ class DiagnosticExportService {
     final profile = profileSnapshot.data() ?? const <String, dynamic>{};
     final zones = await UserRepository.instance.getZones(uid);
     final dartLog = await DebugLogService.instance.read();
+    final liveCallState = await _readLiveCallState();
 
     final locationServiceEnabled = await Geolocator.isLocationServiceEnabled();
     final locationPermission = await Geolocator.checkPermission();
@@ -54,6 +58,14 @@ class DiagnosticExportService {
       ..writeln('calls=${automation.calls}')
       ..writeln('sleep=${automation.sleep}')
       ..writeln('legacyMaster=${prefs.getBool(AutomationPreferences.legacyMasterKey)}')
+      ..writeln(
+        'flutterLastOverride='
+        '${prefs.getString('automatic_status_last_override_v1') ?? 'none'}',
+      )
+      ..writeln(
+        'flutterPreviousActivity='
+        '${prefs.getString('automatic_status_previous_activity_v1') ?? 'none'}',
+      )
       ..writeln()
       ..writeln('[CURRENT PROFILE]');
 
@@ -128,6 +140,13 @@ class DiagnosticExportService {
 
     buffer
       ..writeln()
+      ..writeln('[NATIVE ANDROID LIVE CALL STATE]')
+      ..writeln(
+        liveCallState == null
+            ? 'unavailable'
+            : const JsonEncoder.withIndent('  ').convert(liveCallState),
+      )
+      ..writeln()
       ..writeln('[NATIVE ANDROID SNAPSHOT]')
       ..writeln(_prettyJsonOrText(prefs.getString(_nativeSnapshotKey)))
       ..writeln()
@@ -166,6 +185,21 @@ class DiagnosticExportService {
     await DebugLogService.instance.clear();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_nativeLogKey);
+  }
+
+  Future<Map<String, dynamic>?> _readLiveCallState() async {
+    try {
+      final raw = await _automaticStatusChannel
+          .invokeMapMethod<String, dynamic>('getCallDiagnostics');
+      return raw == null ? null : Map<String, dynamic>.from(raw);
+    } on MissingPluginException {
+      return null;
+    } on PlatformException catch (error) {
+      return <String, dynamic>{
+        'error': error.code,
+        if (error.message != null) 'message': error.message,
+      };
+    }
   }
 
   String _uidSuffix(String uid) {

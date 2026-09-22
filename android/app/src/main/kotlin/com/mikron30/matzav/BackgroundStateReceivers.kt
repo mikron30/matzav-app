@@ -27,6 +27,8 @@ class PhoneStateReceiver : BroadcastReceiver() {
         private const val KEY_ENABLED = "enabled"
         private const val KEY_CALL_ENABLED = "call_enabled"
         private const val KEY_CALL_ACTIVE = "call_active"
+        private const val KEY_CELLULAR_IDLE_SUPPRESS_UNTIL =
+            "cellular_idle_suppress_until_elapsed"
 
         // Some Android/vendor audio stacks keep MODE_IN_CALL or
         // MODE_IN_COMMUNICATION for a few seconds after TelephonyManager already
@@ -51,11 +53,14 @@ class PhoneStateReceiver : BroadcastReceiver() {
 
         when (intent.getStringExtra(TelephonyManager.EXTRA_STATE)) {
             TelephonyManager.EXTRA_STATE_OFFHOOK -> {
-                if (!prefs.getBoolean(KEY_CALL_ACTIVE, false)) {
-                    // commit() is deliberate: the value must be on disk before
-                    // onReceive can finish, especially on a cold-started process.
-                    prefs.edit().putBoolean(KEY_CALL_ACTIVE, true).commit()
-                }
+                // A real OFFHOOK broadcast starts a new cellular conversation,
+                // so it also cancels the short post-IDLE suppression window.
+                // commit() is deliberate: the values must be on disk before
+                // onReceive can finish, especially on a cold-started process.
+                prefs.edit()
+                    .remove(KEY_CELLULAR_IDLE_SUPPRESS_UNTIL)
+                    .putBoolean(KEY_CALL_ACTIVE, true)
+                    .commit()
                 keepProcessAliveForFirestore()
             }
 
@@ -67,9 +72,12 @@ class PhoneStateReceiver : BroadcastReceiver() {
                 // stacks that second query can briefly still return OFFHOOK,
                 // causing the IDLE broadcast to be discarded and leaving the
                 // user shown as "on call" for tens of seconds or longer.
-                if (prefs.getBoolean(KEY_CALL_ACTIVE, false)) {
-                    prefs.edit().putBoolean(KEY_CALL_ACTIVE, false).commit()
-                }
+                val suppressUntil =
+                    SystemClock.elapsedRealtime() + CALL_END_CLEANUP_MS
+                prefs.edit()
+                    .putBoolean(KEY_CALL_ACTIVE, false)
+                    .putLong(KEY_CELLULAR_IDLE_SUPPRESS_UNTIL, suppressUntil)
+                    .commit()
 
                 // Continue clearing for a short bounded window because the audio
                 // subsystem can lag behind telephony by several seconds. This
@@ -104,9 +112,11 @@ class PhoneStateReceiver : BroadcastReceiver() {
 
         lateinit var check: Runnable
         check = Runnable {
-            // If a new cellular call has already started, stop the cleanup so
-            // we never overwrite the new OFFHOOK transition.
-            if (currentPhoneState(context) == TelephonyManager.CALL_STATE_OFFHOOK) {
+            // A new OFFHOOK broadcast removes this marker. Do not query
+            // TelephonyManager.callState here: on some Samsung/vendor stacks it
+            // can briefly remain OFFHOOK even after Android already delivered
+            // the authoritative IDLE broadcast.
+            if (!prefs.contains(KEY_CELLULAR_IDLE_SUPPRESS_UNTIL)) {
                 pendingResult.finish()
                 return@Runnable
             }

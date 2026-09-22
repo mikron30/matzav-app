@@ -53,6 +53,7 @@ class NativeStatusSyncProvider : ContentProvider(),
 
     private var nativePrefs: SharedPreferences? = null
     private var screenReceiver: BroadcastReceiver? = null
+    private var syncGeneration = 0L
 
     override fun onCreate(): Boolean {
         val appContext = context?.applicationContext ?: return false
@@ -169,21 +170,26 @@ class NativeStatusSyncProvider : ContentProvider(),
         updates[BUSY_PREVIOUS_AVAILABILITY] = FieldValue.delete()
     }
 
+    private fun desiredOverride(prefs: SharedPreferences): String {
+        val enabled = prefs.getBoolean(KEY_ENABLED, false)
+        val callEnabled = prefs.getBoolean(KEY_CALL_ENABLED, false)
+        val sleepEnabled = prefs.getBoolean(KEY_SLEEP_ENABLED, false)
+        return when {
+            !enabled -> "none"
+            callEnabled && prefs.getBoolean(KEY_CALL_ACTIVE, false) -> "onCall"
+            sleepEnabled && prefs.getBoolean(KEY_SLEEP_ACTIVE, false) -> "sleeping"
+            else -> "none"
+        }
+    }
+
     private fun syncStatus(appContext: Context) {
         val prefs = nativePrefs ?: appContext.getSharedPreferences(
             NATIVE_PREFS,
             Context.MODE_PRIVATE,
         )
 
-        val enabled = prefs.getBoolean(KEY_ENABLED, false)
-        val callEnabled = prefs.getBoolean(KEY_CALL_ENABLED, false)
-        val sleepEnabled = prefs.getBoolean(KEY_SLEEP_ENABLED, false)
-        val desired = when {
-            !enabled -> "none"
-            callEnabled && prefs.getBoolean(KEY_CALL_ACTIVE, false) -> "onCall"
-            sleepEnabled && prefs.getBoolean(KEY_SLEEP_ACTIVE, false) -> "sleeping"
-            else -> "none"
-        }
+        val generation = ++syncGeneration
+        val desired = desiredOverride(prefs)
 
         val user = FirebaseAuth.getInstance().currentUser ?: return
         val profileRef = FirebaseFirestore.getInstance()
@@ -195,6 +201,10 @@ class NativeStatusSyncProvider : ContentProvider(),
             .getString(FLUTTER_PREVIOUS_ACTIVITY_KEY, null)
 
         profileRef.get().addOnCompleteListener { task ->
+            // A newer call/sleep preference change already started another
+            // reconciliation. Do not dispatch an older Firestore write.
+            if (generation != syncGeneration) return@addOnCompleteListener
+
             val snapshot = if (task.isSuccessful) task.result else null
             val data = snapshot?.data ?: emptyMap<String, Any>()
             val currentActivity = data["activity"] as? String ?: "home"
@@ -270,8 +280,22 @@ class NativeStatusSyncProvider : ContentProvider(),
             }
 
             if (updates.isEmpty()) return@addOnCompleteListener
+            if (generation != syncGeneration) return@addOnCompleteListener
+
             updates["updatedAt"] = FieldValue.serverTimestamp()
             profileRef.set(updates, SetOptions.merge()).addOnSuccessListener {
+                // A write may already have been sent when a newer IDLE/OFFHOOK
+                // transition arrived. If this completion is now stale, perform
+                // one fresh reconciliation so the latest native state wins even
+                // when Firestore acknowledgements arrive out of order.
+                if (
+                    generation != syncGeneration ||
+                    desiredOverride(prefs) != desired
+                ) {
+                    syncStatus(appContext)
+                    return@addOnSuccessListener
+                }
+
                 // Resume the current driving state only after the higher-priority
                 // call/sleep write has settled; fixed delays can race the network.
                 NativeDrivingMonitor.scheduleStatusSync(appContext)

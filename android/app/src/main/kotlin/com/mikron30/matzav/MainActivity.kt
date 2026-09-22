@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.telephony.TelephonyManager
 import com.google.android.gms.auth.api.identity.GetPhoneNumberHintIntentRequest
 import com.google.android.gms.auth.api.identity.Identity
@@ -93,8 +94,17 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
                 "getCurrentOverride" -> {
+                    // Re-read Android's live phone/audio state before returning
+                    // the override. This prevents a stale in-memory call flag
+                    // from keeping the Flutter profile on "onCall".
+                    AutomaticStatusMonitor.reconcileNow(applicationContext)
                     result.success(
                         AutomaticStatusMonitor.currentOverride(applicationContext),
+                    )
+                }
+                "getCallDiagnostics" -> {
+                    result.success(
+                        AutomaticStatusMonitor.callDiagnostics(applicationContext),
                     )
                 }
                 "isDrivingActive" -> {
@@ -358,6 +368,8 @@ object AutomaticStatusMonitor {
     private const val KEY_SLEEP_ENABLED = "sleep_enabled"
     private const val KEY_CALL_ACTIVE = "call_active"
     private const val KEY_SLEEP_ACTIVE = "sleep_active"
+    private const val KEY_CELLULAR_IDLE_SUPPRESS_UNTIL =
+        "cellular_idle_suppress_until_elapsed"
     private const val CALL_STATE_POLL_MS = 2000L
 
     private var channel: MethodChannel? = null
@@ -432,6 +444,54 @@ object AutomaticStatusMonitor {
                 prefs.getBoolean(KEY_SLEEP_ACTIVE, false) -> "sleeping"
             else -> "none"
         }
+    }
+
+    /**
+     * Refreshes both foreground call detectors from Android immediately.
+     * getCurrentOverride() calls this before Flutter makes an automation
+     * decision, so a missed/delayed listener cannot leave the cloud profile
+     * stuck on an old call state.
+     */
+    fun reconcileNow(context: Context) {
+        val appContext = context.applicationContext
+        updateCallStateFromAudio(appContext)
+        updateCallStateFromPhone(appContext)
+        updateCombinedCallState(appContext)
+    }
+
+    /**
+     * Live, local-only diagnostics. No caller identity, number, audio, or call
+     * log is exposed; only aggregate detector state is returned to Flutter.
+     */
+    fun callDiagnostics(context: Context): Map<String, Any> {
+        val appContext = context.applicationContext
+        reconcileNow(appContext)
+
+        val prefs = prefs(appContext)
+        val manager =
+            appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val phoneState = currentPhoneState(appContext)
+        val audioMode = manager.mode
+        val suppressed = isCellularEndSuppressed(appContext)
+        val effective = prefs.getBoolean(KEY_CALL_ACTIVE, false)
+
+        return mapOf(
+            "timeMs" to System.currentTimeMillis(),
+            "prefsCallActive" to effective,
+            "phoneCallActiveMemory" to phoneCallActive,
+            "audioCallActiveMemory" to audioCallActive,
+            "phoneState" to phoneState,
+            "phoneStateName" to phoneStateName(phoneState),
+            "phoneStateActiveNow" to
+                (phoneState == TelephonyManager.CALL_STATE_OFFHOOK),
+            "audioMode" to audioMode,
+            "audioModeName" to audioModeName(audioMode),
+            "audioModeActiveNow" to isCommunicationMode(audioMode),
+            "cellularEndSuppressed" to suppressed,
+            "cellularIdleSuppressUntilElapsed" to
+                prefs.getLong(KEY_CELLULAR_IDLE_SUPPRESS_UNTIL, 0L),
+            "currentOverride" to currentOverride(appContext),
+        )
     }
 
     fun onSleepStateChanged(context: Context) {
@@ -515,6 +575,10 @@ object AutomaticStatusMonitor {
                 }
 
                 setPhoneCallActive(context, active)
+                // Re-evaluate even when the raw phone flag did not change. This
+                // is important when the short post-IDLE suppression window has
+                // just expired while AudioManager is still in communication mode.
+                updateCombinedCallState(context)
                 handler.postDelayed(this, CALL_STATE_POLL_MS)
             }
         }
@@ -536,15 +600,8 @@ object AutomaticStatusMonitor {
     }
 
     private fun updateCallStateFromPhone(context: Context) {
-        val manager = telephonyManager ?: return
-        val active = try {
-            @Suppress("DEPRECATION")
-            manager.callState == TelephonyManager.CALL_STATE_OFFHOOK
-        } catch (_: SecurityException) {
-            false
-        } catch (_: UnsupportedOperationException) {
-            false
-        }
+        val active =
+            currentPhoneState(context) == TelephonyManager.CALL_STATE_OFFHOOK
         setPhoneCallActive(context, active)
     }
 
@@ -573,11 +630,75 @@ object AutomaticStatusMonitor {
             return
         }
 
-        val active = audioCallActive || phoneCallActive
+        // PHONE_STATE/IDLE is authoritative for a short bounded window. Both
+        // TelephonyManager.callState and AudioManager.mode can lag behind that
+        // broadcast on some Samsung/vendor stacks, so do not let either stale
+        // detector re-assert a finished call during the window.
+        val active = if (isCellularEndSuppressed(context)) {
+            false
+        } else {
+            audioCallActive || phoneCallActive
+        }
         if (prefs.getBoolean(KEY_CALL_ACTIVE, false) == active) return
 
         prefs.edit().putBoolean(KEY_CALL_ACTIVE, active).apply()
         emitCurrentOverride(context)
+    }
+
+    private fun currentPhoneState(context: Context): Int {
+        return try {
+            @Suppress("DEPRECATION")
+            val manager = telephonyManager
+                ?: context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            manager.callState
+        } catch (_: SecurityException) {
+            TelephonyManager.CALL_STATE_IDLE
+        } catch (_: UnsupportedOperationException) {
+            TelephonyManager.CALL_STATE_IDLE
+        } catch (_: Exception) {
+            TelephonyManager.CALL_STATE_IDLE
+        }
+    }
+
+    private fun isCellularEndSuppressed(context: Context): Boolean {
+        val until = prefs(context).getLong(
+            KEY_CELLULAR_IDLE_SUPPRESS_UNTIL,
+            0L,
+        )
+        return until > SystemClock.elapsedRealtime()
+    }
+
+    private fun phoneStateName(state: Int): String {
+        return when (state) {
+            TelephonyManager.CALL_STATE_IDLE -> "IDLE"
+            TelephonyManager.CALL_STATE_RINGING -> "RINGING"
+            TelephonyManager.CALL_STATE_OFFHOOK -> "OFFHOOK"
+            else -> "UNKNOWN"
+        }
+    }
+
+    private fun audioModeName(mode: Int): String {
+        return when (mode) {
+            AudioManager.MODE_NORMAL -> "NORMAL"
+            AudioManager.MODE_RINGTONE -> "RINGTONE"
+            AudioManager.MODE_IN_CALL -> "IN_CALL"
+            AudioManager.MODE_IN_COMMUNICATION -> "IN_COMMUNICATION"
+            else -> {
+                if (
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    mode == AudioManager.MODE_CALL_REDIRECT
+                ) {
+                    "CALL_REDIRECT"
+                } else if (
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    mode == AudioManager.MODE_COMMUNICATION_REDIRECT
+                ) {
+                    "COMMUNICATION_REDIRECT"
+                } else {
+                    "UNKNOWN"
+                }
+            }
+        }
     }
 
     private fun isCommunicationMode(mode: Int): Boolean {
