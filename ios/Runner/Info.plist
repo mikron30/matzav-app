@@ -24,6 +24,8 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>GADApplicationIdentifier</key>
+	<string>ca-app-pub-6120568543364688~1858140985</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSContactsUsageDescription</key>
