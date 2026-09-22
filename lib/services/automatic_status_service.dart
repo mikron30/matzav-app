@@ -113,6 +113,23 @@ class AutomaticStatusService {
     }
   }
 
+  /// Force-clear a stale native IN_VEHICLE state after stronger GPS evidence
+  /// shows that the trip ended.
+  Future<bool> forceNativeDrivingInactive({
+    ActivityStatus? returnActivity,
+  }) async {
+    try {
+      return await _channel.invokeMethod<bool>('forceDrivingInactive', {
+            'returnActivity': returnActivity?.name,
+          }) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
   /// Ask Android to publish the latest persisted IN_VEHICLE state again.
   /// Used as a recovery path when a previous native Firestore transaction was
   /// delayed by temporary DNS/network failure.

@@ -25,6 +25,12 @@ class LocationStatusService {
   ActivityStatus _lastNonDriving = ActivityStatus.home;
   DateTime? _lastDebugPositionAt;
   String? _lastDebugZoneDecision;
+  DateTime? _nativeStationarySince;
+  Position? _nativeStationaryAnchor;
+
+  static const _nativeStationaryTimeout = Duration(minutes: 5);
+  static const double _nativeStationarySpeedMps = 1.4; // ~5 km/h.
+  static const double _nativeStationaryBaseRadiusM = 40;
 
   bool get running => _subscription != null;
 
@@ -125,6 +131,7 @@ class LocationStatusService {
     _slowSamples = 0;
     _lastDebugPositionAt = null;
     _lastDebugZoneDecision = null;
+    _resetNativeStationaryTracking();
 
     _subscription = Geolocator.getPositionStream(locationSettings: settings)
         .listen(
@@ -199,6 +206,7 @@ class LocationStatusService {
     _fastSamples = 0;
     _slowSamples = 0;
     _driving = false;
+    _resetNativeStationaryTracking();
   }
 
   Future<void> disable() => stop(rememberOff: true);
@@ -224,8 +232,81 @@ class LocationStatusService {
       return;
     }
 
-    if (_drivingEnabled &&
-        await AutomaticStatusService.instance.isNativeDrivingActive()) {
+    final nativeDriving = _drivingEnabled &&
+        await AutomaticStatusService.instance.isNativeDrivingActive();
+
+    if (nativeDriving) {
+      // A saved home fix is stronger evidence than Activity Recognition's
+      // IN_VEHICLE state. If the device is inside home, end driving immediately.
+      final atHome = await _isInsideSavedHome(uid, position);
+      if (atHome) {
+        final meetingTimerActive =
+            await StatusTimerService.instance.isMeetingTimerActive();
+        final nextActivity = meetingTimerActive
+            ? ActivityStatus.meeting
+            : ActivityStatus.home;
+        await _finishStaleNativeDriving(
+          uid: uid,
+          position: position,
+          nextActivity: nextActivity,
+          reason: 'home_override',
+        );
+        return;
+      }
+
+      if (_nativePositionLooksStationary(position)) {
+        final anchor = _nativeStationaryAnchor;
+        if (_nativeStationarySince == null || anchor == null) {
+          _nativeStationarySince = now;
+          _nativeStationaryAnchor = position;
+          _debug('native_driving_stationary_started', {
+            ..._positionData(position),
+            'timeoutMinutes': _nativeStationaryTimeout.inMinutes,
+          });
+        } else {
+          final movedM = Geolocator.distanceBetween(
+            anchor.latitude,
+            anchor.longitude,
+            position.latitude,
+            position.longitude,
+          );
+          final movementThresholdM = _nativeStationaryBaseRadiusM +
+              anchor.accuracy +
+              position.accuracy;
+
+          if (movedM > movementThresholdM) {
+            _nativeStationarySince = now;
+            _nativeStationaryAnchor = position;
+            _debug('native_driving_stationary_reset_movement', {
+              ..._positionData(position),
+              'movedM': double.parse(movedM.toStringAsFixed(1)),
+              'movementThresholdM':
+                  double.parse(movementThresholdM.toStringAsFixed(1)),
+            });
+          } else if (now.difference(_nativeStationarySince!) >=
+              _nativeStationaryTimeout) {
+            final nextActivity =
+                await _activityAfterDrivingStops(uid, position);
+            await _finishStaleNativeDriving(
+              uid: uid,
+              position: position,
+              nextActivity: nextActivity,
+              reason: 'stationary_5_minutes',
+            );
+            return;
+          }
+        }
+      } else {
+        if (_nativeStationarySince != null) {
+          _debug('native_driving_stationary_reset_speed', {
+            ..._positionData(position),
+            'stationarySeconds':
+                now.difference(_nativeStationarySince!).inSeconds,
+          });
+        }
+        _resetNativeStationaryTracking();
+      }
+
       if (!_driving) {
         _driving = true;
         _debug('native_driving_recovery_publish', _positionData(position));
@@ -257,6 +338,8 @@ class LocationStatusService {
       _slowSamples = 0;
       return;
     }
+
+    _resetNativeStationaryTracking();
 
     final speed = position.speed;
 
@@ -350,6 +433,75 @@ class LocationStatusService {
         activity: locationActivity,
       );
     }
+  }
+
+  bool _nativePositionLooksStationary(Position position) {
+    final speed = position.speed < 0 ? 0.0 : position.speed;
+    return speed <= _nativeStationarySpeedMps;
+  }
+
+  void _resetNativeStationaryTracking() {
+    _nativeStationarySince = null;
+    _nativeStationaryAnchor = null;
+  }
+
+  Future<bool> _isInsideSavedHome(String uid, Position position) async {
+    final zones = await UserRepository.instance.getZones(uid);
+    final home = _readZone(zones['home']);
+    return home != null && _inside(position, home);
+  }
+
+  Future<ActivityStatus> _activityAfterDrivingStops(
+    String uid,
+    Position position,
+  ) async {
+    if (await StatusTimerService.instance.isMeetingTimerActive()) {
+      return ActivityStatus.meeting;
+    }
+
+    final locationActivity = await _activityForLocation(uid, position);
+    if (locationActivity != null) return locationActivity;
+
+    return StatusTimerService.instance.resolveActivityReturn(
+      uid,
+      _lastNonDriving,
+    );
+  }
+
+  Future<void> _finishStaleNativeDriving({
+    required String uid,
+    required Position position,
+    required ActivityStatus nextActivity,
+    required String reason,
+  }) async {
+    final stationarySeconds = _nativeStationarySince == null
+        ? null
+        : DateTime.now().difference(_nativeStationarySince!).inSeconds;
+
+    _debug('native_driving_forced_exit', {
+      ..._positionData(position),
+      'reason': reason,
+      'stationarySeconds': stationarySeconds,
+      'nextActivity': nextActivity.name,
+    });
+
+    // Persist the return activity into the native state before publishing it
+    // through Flutter. The native WorkManager retry will therefore converge to
+    // the same value instead of restoring an older pre-trip status.
+    await AutomaticStatusService.instance.forceNativeDrivingInactive(
+      returnActivity: nextActivity,
+    );
+
+    _driving = false;
+    _fastSamples = 0;
+    _slowSamples = 0;
+    _resetNativeStationaryTracking();
+    _lastNonDriving = nextActivity;
+
+    await UserRepository.instance.updateStatus(
+      uid: uid,
+      activity: nextActivity,
+    );
   }
 
   Future<ActivityStatus?> _activityForLocation(

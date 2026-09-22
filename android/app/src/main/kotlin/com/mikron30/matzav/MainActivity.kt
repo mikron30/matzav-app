@@ -113,6 +113,15 @@ class MainActivity : FlutterActivity() {
                 "drivingReturnActivity" -> {
                     result.success(NativeDrivingMonitor.returnActivity(applicationContext))
                 }
+                "forceDrivingInactive" -> {
+                    val returnActivity = call.argument<String>("returnActivity")
+                    result.success(
+                        NativeDrivingMonitor.forceInactive(
+                            applicationContext,
+                            returnActivity,
+                        ),
+                    )
+                }
                 "syncDrivingStatus" -> {
                     NativeDrivingMonitor.scheduleStatusSync(applicationContext)
                     result.success(null)

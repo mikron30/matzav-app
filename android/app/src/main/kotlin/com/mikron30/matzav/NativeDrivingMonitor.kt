@@ -123,6 +123,37 @@ object NativeDrivingMonitor {
         return previous?.takeIf { DrivingStatusPolicy.stable(it) }
     }
 
+    /**
+     * Clears a stale IN_VEHICLE state after Flutter has stronger GPS evidence
+     * that the trip ended. The return activity is persisted before the native
+     * EXIT revision, so the worker cannot later restore an older status.
+     */
+    @Synchronized
+    fun forceInactive(context: Context, returnActivity: String?): Boolean {
+        val appContext = context.applicationContext
+        val owner = FirebaseAuth.getInstance().currentUser?.uid ?: return false
+        val state = prefs(appContext)
+
+        if (state.getString(KEY_OWNER, null) != owner) return false
+
+        returnActivity
+            ?.takeIf { DrivingStatusPolicy.stable(it) }
+            ?.let { stableReturn ->
+                check(
+                    state.edit()
+                        .putString("previous_activity", stableReturn)
+                        .putString("last_non_driving", stableReturn)
+                        .commit(),
+                ) { "Could not persist the forced driving return activity" }
+            }
+
+        // Record a fresh EXIT revision even if KEY_ACTIVE is already false.
+        // This also repairs a cloud profile that is still stuck on "driving".
+        recordState(appContext, owner, false)
+        scheduleStatusSync(appContext)
+        return true
+    }
+
     @Synchronized
     fun reconcile(context: Context) {
         val appContext = context.applicationContext

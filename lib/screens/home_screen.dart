@@ -499,12 +499,6 @@ class _FriendsSection extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'החברים שלי',
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                ),
-                          ),
-                          Text(
                             isPremium
                                 ? '${docs.length} חברים • Premium'
                                 : '${docs.length} מתוך ${FriendAccessPolicy.freeFriendLimit} בחינם',
@@ -871,13 +865,6 @@ class _MyStatusCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              'המצב שלי',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-            ),
-            const SizedBox(height: 12),
             DropdownButtonFormField<ActivityStatus>(
               initialValue: activity,
               decoration: const InputDecoration(
