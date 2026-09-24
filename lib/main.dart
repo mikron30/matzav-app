@@ -41,9 +41,8 @@ class _StartupDiagnosticAppState extends State<StartupDiagnosticApp> {
 
     try {
       _setStage('2/5 Initializing Firebase');
-      await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform,
-      ).timeout(const Duration(seconds: 15));
+      await Firebase.initializeApp()
+          .timeout(const Duration(seconds: 15));
 
       _setStage('3/5 Loading local settings');
       await ThemeService.instance
@@ -98,7 +97,7 @@ class _StartupDiagnosticAppState extends State<StartupDiagnosticApp> {
                   ),
                   const SizedBox(height: 12),
                   const Text(
-                    'Build 52',
+                    'Build 53',
                     style: TextStyle(fontSize: 16),
                   ),
                   const SizedBox(height: 24),
