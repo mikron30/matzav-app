@@ -79,8 +79,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _loadSettingsState() async {
     var automation = await AutomationPreferences.instance.load();
-    if (_isIos && (automation.calls || automation.sleep)) {
-      automation = automation.copyWith(calls: false, sleep: false);
+    if (_isIos && automation.sleep) {
+      automation = automation.copyWith(sleep: false);
       await AutomationPreferences.instance.save(automation);
     }
     final zones = await UserRepository.instance.getZones(uid);
@@ -103,11 +103,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) setState(() => _automation = settings);
 
     try {
-      // Android has native call/sleep monitoring. iOS intentionally uses
-      // only the location-based automation that is supported there.
-      if (!_isIos) {
-        await AutomaticStatusService.instance.refresh(uid: uid);
-      }
+      // Android supports native call/sleep monitoring. iOS supports native
+      // CallKit call monitoring; sleep remains disabled there.
+      await AutomaticStatusService.instance.refresh(uid: uid);
 
       final snapshot = await UserRepository.instance.profileStream(uid).first;
       final currentActivity = activityFromString(
@@ -142,7 +140,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         driving: value,
         zones: value,
         away: value,
-        calls: _isIos ? false : value,
+        calls: value,
         sleep: _isIos ? false : value,
       ),
       message: value
@@ -320,13 +318,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final supportedAutomationEnabled = _isIos
-        ? (_automation.driving || _automation.zones || _automation.away)
+        ? (_automation.driving ||
+            _automation.zones ||
+            _automation.away ||
+            _automation.calls)
         : _automation.anyEnabled;
     final supportedAutomationAllEnabled = _isIos
-        ? (_automation.driving && _automation.zones && _automation.away)
+        ? (_automation.driving &&
+            _automation.zones &&
+            _automation.away &&
+            _automation.calls)
         : _automation.allEnabled;
     final masterSubtitle = supportedAutomationAllEnabled
-        ? (_isIos ? 'כל שלושת הזיהויים פעילים' : 'כל חמשת הזיהויים פעילים')
+        ? (_isIos ? 'כל ארבעת הזיהויים פעילים' : 'כל חמשת הזיהויים פעילים')
         : supportedAutomationEnabled
         ? 'חלק מהזיהויים פעילים — אפשר לשלוט בכל אחד בנפרד'
         : 'כל הזיהויים כבויים';
@@ -501,22 +505,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     'אם זיהוי האזורים פעיל.',
                   ),
                 ),
-                if (!_isIos) ...[
-                  const Divider(height: 1),
-                  SwitchListTile.adaptive(
-                    value: _automation.calls,
-                    onChanged: _automationBusy
-                        ? null
-                        : (value) => _applyAutomationSettings(
-                              _automation.copyWith(calls: value),
-                            ),
-                    secondary: const Icon(Icons.phone_in_talk_outlined),
-                    title: const Text('זיהוי שיחה'),
-                    subtitle: const Text(
-                      'מזהה שיחת טלפון או VoIP ומציג "בשיחה", בלי לקרוא '
-                      'מספר, יומן שיחות או תוכן שיחה.',
-                    ),
+                const Divider(height: 1),
+                SwitchListTile.adaptive(
+                  value: _automation.calls,
+                  onChanged: _automationBusy
+                      ? null
+                      : (value) => _applyAutomationSettings(
+                            _automation.copyWith(calls: value),
+                          ),
+                  secondary: const Icon(Icons.phone_in_talk_outlined),
+                  title: const Text('זיהוי שיחה'),
+                  subtitle: Text(
+                    _isIos
+                        ? 'מזהה שיחה פעילה דרך CallKit ומציג "בשיחה", בלי '
+                          'לקרוא מספר טלפון, זהות מתקשר, יומן שיחות או תוכן.'
+                        : 'מזהה שיחת טלפון או VoIP ומציג "בשיחה", בלי לקרוא '
+                          'מספר, יומן שיחות או תוכן שיחה.',
                   ),
+                ),
+                if (!_isIos) ...[
                   const Divider(height: 1),
                   SwitchListTile.adaptive(
                     value: _automation.sleep,
@@ -735,8 +742,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Text(
                 _isIos
                     ? 'אפשר להפעיל כל מנגנון זיהוי בנפרד. המתג העליון מפעיל '
-                      'או מכבה את שלושת מנגנוני המיקום יחד. זיהוי "לא בבית" '
-                      'דורש שמיקום הבית יהיה שמור.'
+                      'או מכבה את ארבעת המנגנונים הנתמכים ב־iOS. זיהוי '
+                      '"לא בבית" דורש שמיקום הבית יהיה שמור.'
                     : 'אפשר להפעיל כל מנגנון זיהוי בנפרד. המתג העליון מפעיל '
                       'או מכבה את חמשתם יחד. זיהוי "לא בבית" דורש שמיקום '
                       'הבית יהיה שמור.',
