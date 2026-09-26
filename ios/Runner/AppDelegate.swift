@@ -2,44 +2,75 @@ import CallKit
 import Flutter
 import UIKit
 
-private final class MatzavCallMonitor: NSObject, CXCallObserverDelegate {
-  private let observer = CXCallObserver()
+private final class MatzavAutomaticStatusMonitor: NSObject, CXCallObserverDelegate {
+  private let callObserver = CXCallObserver()
   private weak var channel: FlutterMethodChannel?
-  private var enabled = false
+
+  private var callsEnabled = false
+  private var sleepEnabled = false
+  private var derivedSleepActive = false
 
   init(channel: FlutterMethodChannel) {
     self.channel = channel
     super.init()
   }
 
-  func start() {
-    enabled = true
-    observer.setDelegate(self, queue: .main)
+  func start(callsEnabled: Bool, sleepEnabled: Bool) {
+    self.callsEnabled = callsEnabled
+    self.sleepEnabled = sleepEnabled
+
+    if callsEnabled {
+      callObserver.setDelegate(self, queue: .main)
+    } else {
+      callObserver.setDelegate(nil, queue: nil)
+    }
+
+    if !sleepEnabled {
+      derivedSleepActive = false
+    }
+
     emitCurrentOverride()
   }
 
   func stop() {
-    enabled = false
-    observer.setDelegate(nil, queue: nil)
+    callsEnabled = false
+    sleepEnabled = false
+    derivedSleepActive = false
+    callObserver.setDelegate(nil, queue: nil)
     emitOverride("none")
   }
 
-  func currentOverride() -> String {
-    guard enabled else { return "none" }
+  func setDerivedSleepActive(_ active: Bool) {
+    derivedSleepActive = sleepEnabled && active
+    emitCurrentOverride()
+  }
 
-    // Match Android behavior: only an established conversation counts as
-    // "onCall". Ringing/dialing alone does not change the user's status.
-    let activeConnectedCall = observer.calls.contains {
-      $0.hasConnected && !$0.hasEnded
+  func currentOverride() -> String {
+    if callsEnabled {
+      // Match Android behavior: only an established conversation counts as
+      // "onCall". Ringing/dialing alone does not change the user's status.
+      let activeConnectedCall = callObserver.calls.contains {
+        $0.hasConnected && !$0.hasEnded
+      }
+      if activeConnectedCall {
+        return "onCall"
+      }
     }
-    return activeConnectedCall ? "onCall" : "none"
+
+    if sleepEnabled && derivedSleepActive {
+      return "sleeping"
+    }
+
+    return "none"
   }
 
   func diagnostics() -> [String: Any] {
-    let calls = observer.calls
+    let calls = callObserver.calls
     return [
       "platform": "ios",
-      "enabled": enabled,
+      "callsEnabled": callsEnabled,
+      "sleepEnabled": sleepEnabled,
+      "derivedSleepActive": derivedSleepActive,
       "observedCallCount": calls.count,
       "connectedCallCount": calls.filter { $0.hasConnected && !$0.hasEnded }.count,
       "currentOverride": currentOverride(),
@@ -67,7 +98,7 @@ private final class MatzavCallMonitor: NSObject, CXCallObserverDelegate {
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var automaticStatusChannel: FlutterMethodChannel?
-  private var callMonitor: MatzavCallMonitor?
+  private var automaticStatusMonitor: MatzavAutomaticStatusMonitor?
 
   override func application(
     _ application: UIApplication,
@@ -85,8 +116,8 @@ private final class MatzavCallMonitor: NSObject, CXCallObserverDelegate {
     )
     automaticStatusChannel = channel
 
-    let monitor = MatzavCallMonitor(channel: channel)
-    callMonitor = monitor
+    let monitor = MatzavAutomaticStatusMonitor(channel: channel)
+    automaticStatusMonitor = monitor
 
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self else {
@@ -104,26 +135,34 @@ private final class MatzavCallMonitor: NSObject, CXCallObserverDelegate {
       case "startMonitoring":
         let args = call.arguments as? [String: Any]
         let callsEnabled = args?["callsEnabled"] as? Bool ?? true
-        if callsEnabled {
-          self.callMonitor?.start()
-        } else {
-          self.callMonitor?.stop()
-        }
+        let sleepEnabled = args?["sleepEnabled"] as? Bool ?? true
+        self.automaticStatusMonitor?.start(
+          callsEnabled: callsEnabled,
+          sleepEnabled: sleepEnabled
+        )
         result(nil)
 
       case "stopMonitoring":
-        self.callMonitor?.stop()
+        self.automaticStatusMonitor?.stop()
         result(nil)
 
       case "getCurrentOverride":
-        result(self.callMonitor?.currentOverride() ?? "none")
+        result(self.automaticStatusMonitor?.currentOverride() ?? "none")
 
       case "getCallDiagnostics":
-        result(self.callMonitor?.diagnostics() ?? [
+        result(self.automaticStatusMonitor?.diagnostics() ?? [
           "platform": "ios",
-          "enabled": false,
+          "callsEnabled": false,
+          "sleepEnabled": false,
+          "derivedSleepActive": false,
           "currentOverride": "none",
         ])
+
+      case "setDerivedSleepActive":
+        let args = call.arguments as? [String: Any]
+        let active = args?["active"] as? Bool ?? false
+        self.automaticStatusMonitor?.setDerivedSleepActive(active)
+        result(self.automaticStatusMonitor?.currentOverride() ?? "none")
 
       // Driving is handled by the Flutter/Core Location automation on iOS.
       case "isDrivingActive":
