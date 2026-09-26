@@ -101,6 +101,23 @@ class AutomaticStatusService {
 
   Future<void> refresh({required String uid}) => start(uid: uid);
 
+  /// iOS sleep detection is derived from the existing background-location
+  /// automation. Native iOS keeps the derived flag together with CallKit so
+  /// an active call always takes precedence over sleep.
+  Future<void> setDerivedSleepActive(bool active) async {
+    try {
+      final current = await _channel.invokeMethod<String>(
+        'setDerivedSleepActive',
+        {'active': active},
+      );
+      await _applyOverride(current ?? (active ? 'sleeping' : 'none'));
+    } on MissingPluginException {
+      // Derived sleep is implemented only on platforms that expose it.
+    } on PlatformException {
+      // Keep the previous automatic state if the native side is unavailable.
+    }
+  }
+
   /// Android's vehicle transition remains authoritative at traffic lights.
   /// GPS remains the fallback when the detector has not observed a trip yet.
   Future<bool> isNativeDrivingActive() async {
