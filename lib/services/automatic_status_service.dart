@@ -7,10 +7,10 @@ import 'busy_availability_service.dart';
 import 'status_timer_service.dart';
 import 'user_repository.dart';
 
-/// Coordinates Android automatic overrides that take priority over location:
-/// an active phone/VoIP conversation and sleep detection.
+/// Coordinates native automatic overrides that take priority over location.
 ///
-/// The Android side detects only aggregate call/sleep state. It does not read
+/// Android supplies call and sleep detection. iOS supplies CallKit call
+/// detection. Native code exposes only aggregate state; Matzav does not read
 /// call audio, caller identity, call logs, or message content.
 class AutomaticStatusService {
   AutomaticStatusService._();
@@ -34,7 +34,7 @@ class AutomaticStatusService {
   /// Reads the current native call/sleep override before location automation
   /// decides whether it may publish a GPS-derived status. This prevents a stale
   /// Flutter-side value from permanently blocking driving/home/away detection
-  /// after Android has already ended a call or sleep override in the background.
+  /// after the native platform has already ended a temporary override.
   Future<bool> isOverrideActiveNow() async {
     try {
       final current =
@@ -44,7 +44,7 @@ class AutomaticStatusService {
       // Firestore, reconcile it here before location automation continues.
       await _applyOverride(current, reconcileStaleCloud: true);
     } on MissingPluginException {
-      // Android-only feature. Keep the last known state on other platforms.
+      // Feature is unavailable on this platform. Keep the last known state on other platforms.
     } on PlatformException {
       // Keep the last known state if the native side is temporarily unavailable.
     }
@@ -74,7 +74,7 @@ class AutomaticStatusService {
       try {
         await _channel.invokeMethod<void>('stopMonitoring');
       } on MissingPluginException {
-        // Android-only feature.
+        // Feature is unavailable on this platform.
       } on PlatformException {
         // Restore below anyway.
       }
@@ -92,7 +92,7 @@ class AutomaticStatusService {
           await _channel.invokeMethod<String>('getCurrentOverride') ?? 'none';
       await _applyOverride(current, reconcileStaleCloud: true);
     } on MissingPluginException {
-      // Android-only feature.
+      // Feature is unavailable on this platform.
     } on PlatformException {
       // The other automatic mechanisms continue to work even if native
       // monitoring is unavailable on a particular device.
@@ -137,7 +137,7 @@ class AutomaticStatusService {
     try {
       await _channel.invokeMethod<void>('syncDrivingStatus');
     } on MissingPluginException {
-      // Android-only feature.
+      // Feature is unavailable on this platform.
     } on PlatformException {
       // The persisted native state remains available for a later retry.
     }
@@ -147,7 +147,7 @@ class AutomaticStatusService {
     try {
       await _channel.invokeMethod<void>('stopMonitoring');
     } on MissingPluginException {
-      // Android-only feature.
+      // Feature is unavailable on this platform.
     } on PlatformException {
       // We still restore the previous status below.
     }
@@ -227,7 +227,7 @@ class AutomaticStatusService {
         // call/sleep provider may have completed its own write earlier.
         await _channel.invokeMethod<void>('syncDrivingStatus');
       } on MissingPluginException {
-        // Android-only feature.
+        // Feature is unavailable on this platform.
       } on PlatformException {
         // Persisted native transitions still have their WorkManager retry.
       }
@@ -300,7 +300,7 @@ class AutomaticStatusService {
     try {
       await _channel.invokeMethod<void>('syncDrivingStatus');
     } on MissingPluginException {
-      // Android-only feature.
+      // Feature is unavailable on this platform.
     } on PlatformException {
       // Persisted native transitions still have their WorkManager retry.
     }
