@@ -7,6 +7,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import '../models/friend_access_policy.dart';
 import '../models/status_models.dart';
+import 'community_moderation_service.dart';
 
 class UserRepository {
   UserRepository._();
@@ -86,9 +87,12 @@ class UserRepository {
 
     final existing = await profileRef.get();
     final existingPrivate = await privateRef.get();
-    final displayName = (user.displayName?.trim().isNotEmpty ?? false)
+    final rawDisplayName = (user.displayName?.trim().isNotEmpty ?? false)
         ? user.displayName!.trim()
         : (user.email?.split('@').first ?? user.phoneNumber ?? 'חבר');
+    final displayName = CommunityModerationService.safeDisplayName(
+      rawDisplayName,
+    );
 
     final authPhone = user.phoneNumber?.trim();
     final storedPhone = existingPrivate.data()?['phone'] as String?;
@@ -478,6 +482,16 @@ class UserRepository {
     bool shareOwnerPhoneWithFriend = false,
   }) async {
     final relationshipId = _friendshipId(ownerUid, friendUid);
+    final ownerBlockRef = _db
+        .collection('users')
+        .doc(ownerUid)
+        .collection('blocked')
+        .doc(friendUid);
+    final ownerBlock = await ownerBlockRef.get();
+    if (ownerBlock.exists) {
+      throw const BlockedRelationshipException();
+    }
+
     final ownerRef = _friendRef(ownerUid, _installedFriendDocId(friendUid));
     final reverseRef = _friendRef(friendUid, _installedFriendDocId(ownerUid));
     final friendshipRef = _db.collection('friendships').doc(relationshipId);
@@ -706,4 +720,105 @@ class UserRepository {
     if (zones is Map) return Map<String, dynamic>.from(zones);
     return {};
   }
+
+  static const int communityTermsVersion = 1;
+
+  Future<bool> hasAcceptedCommunityTerms(String uid) async {
+    final doc = await _db.collection('private_users').doc(uid).get();
+    final version = (doc.data()?['communityTermsVersion'] as num?)?.toInt() ?? 0;
+    return version >= communityTermsVersion;
+  }
+
+  Future<void> acceptCommunityTerms(String uid) {
+    return _db.collection('private_users').doc(uid).set({
+      'communityTermsVersion': communityTermsVersion,
+      'communityTermsAcceptedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> reportUser({
+    required String reporterUid,
+    required String reportedUid,
+    required String reason,
+    required String reportedDisplayName,
+  }) async {
+    if (reporterUid == reportedUid || reportedUid.trim().isEmpty) {
+      throw ArgumentError('Invalid reported user.');
+    }
+    const allowedReasons = {
+      'harassment',
+      'spam',
+      'inappropriate_profile',
+      'other',
+    };
+    if (!allowedReasons.contains(reason)) {
+      throw ArgumentError('Invalid report reason.');
+    }
+
+    await _db.collection('reports').add({
+      'reporterUid': reporterUid,
+      'reportedUid': reportedUid,
+      'reportedDisplayName': reportedDisplayName.trim(),
+      'reason': reason,
+      'status': 'open',
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> blockUser({
+    required String blockerUid,
+    required String blockedUid,
+    required String friendId,
+  }) async {
+    if (blockerUid == blockedUid || blockedUid.trim().isEmpty) {
+      throw ArgumentError('Invalid blocked user.');
+    }
+
+    // Remove the active relationship first. removeFriend also writes a
+    // tombstone, so legacy clients cannot immediately recreate the friendship.
+    await removeFriend(ownerUid: blockerUid, friendId: friendId);
+
+    await _db
+        .collection('users')
+        .doc(blockerUid)
+        .collection('blocked')
+        .doc(blockedUid)
+        .set({
+          'blockedUid': blockedUid,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+  }
+
+  Future<void> sendSupportMessage({
+    required String uid,
+    required String category,
+    required String message,
+  }) async {
+    final clean = message.trim();
+    if (clean.isEmpty || clean.length > 1500) {
+      throw ArgumentError('Support message is empty or too long.');
+    }
+    const categories = {'support', 'safety', 'privacy', 'other'};
+    if (!categories.contains(category)) {
+      throw ArgumentError('Invalid support category.');
+    }
+
+    await _db
+        .collection('support_requests')
+        .doc(uid)
+        .collection('messages')
+        .add({
+          'category': category,
+          'message': clean,
+          'createdAt': FieldValue.serverTimestamp(),
+          'status': 'open',
+        });
+  }
+}
+
+class BlockedRelationshipException implements Exception {
+  const BlockedRelationshipException();
+
+  @override
+  String toString() => 'המשתמש חסום ולא ניתן ליצור איתו קשר חברים.';
 }
