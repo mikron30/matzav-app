@@ -138,9 +138,11 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!enabled || !mounted) return;
 
     try {
-      // Android has native driving/call/sleep detectors. iOS uses the
-      // background Core Location stream below for its supported automations.
-      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      // Android supplies driving/call/sleep native detectors. iOS supplies
+      // CallKit call detection; Core Location below handles iOS driving/zones.
+      if (!kIsWeb &&
+          (defaultTargetPlatform == TargetPlatform.android ||
+              defaultTargetPlatform == TargetPlatform.iOS)) {
         await AutomaticStatusService.instance.start(uid: uid);
       }
       final snapshot = await UserRepository.instance.profileStream(uid).first;
@@ -166,7 +168,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final prefs = await SharedPreferences.getInstance();
     try {
       if (value) {
-        if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+        if (!kIsWeb &&
+            (defaultTargetPlatform == TargetPlatform.android ||
+                defaultTargetPlatform == TargetPlatform.iOS)) {
           await AutomaticStatusService.instance.start(uid: uid);
         }
         await LocationStatusService.instance.start(
@@ -174,7 +178,9 @@ class _HomeScreenState extends State<HomeScreen> {
           currentActivity: currentActivity,
         );
       } else {
-        if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+        if (!kIsWeb &&
+            (defaultTargetPlatform == TargetPlatform.android ||
+                defaultTargetPlatform == TargetPlatform.iOS)) {
           await AutomaticStatusService.instance.stop();
         }
         await LocationStatusService.instance.disable();
