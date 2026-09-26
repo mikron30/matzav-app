@@ -17,7 +17,8 @@ service cloud.firestore {
                   getAfter(/databases/$(database)/documents/friendships/$(friendshipId)).data.members
                 )
              && uidA in getAfter(/databases/$(database)/documents/friendships/$(friendshipId)).data.members
-             && uidB in getAfter(/databases/$(database)/documents/friendships/$(friendshipId)).data.members;
+             && uidB in getAfter(/databases/$(database)/documents/friendships/$(friendshipId)).data.members
+             && !blockedEither(uidA, uidB);
     }
 
     function friendshipExistsBefore(friendshipId, uidA, uidB) {
@@ -38,6 +39,11 @@ service cloud.firestore {
       return get(
         /databases/$(database)/documents/private_users/$(request.auth.uid)
       ).data.get('phone', null);
+    }
+
+    function blockedEither(uidA, uidB) {
+      return exists(/databases/$(database)/documents/users/$(uidA)/blocked/$(uidB))
+             || exists(/databases/$(database)/documents/users/$(uidB)/blocked/$(uidA));
     }
 
     function validCrossPhoneFields() {
@@ -201,6 +207,66 @@ service cloud.firestore {
 
         allow delete: if isSelf(uid) || validCrossFriendBefore(uid);
       }
+
+      // Blocks are private to their owner, but rules can still consult both
+      // directions to prevent a blocked friendship from being recreated.
+      match /blocked/{blockedUid} {
+        allow read: if isSelf(uid);
+        allow create, update: if isSelf(uid)
+                              && blockedUid != uid
+                              && request.resource.data.blockedUid == blockedUid
+                              && request.resource.data.keys()
+                                   .hasOnly(['blockedUid', 'createdAt']);
+        allow delete: if isSelf(uid);
+      }
+    }
+
+    // Reports are write-only from the reporting user's perspective. They are
+    // reviewed through trusted/admin tooling, not exposed to other users.
+    match /reports/{reportId} {
+      allow create: if signedIn()
+                    && request.resource.data.reporterUid == request.auth.uid
+                    && request.resource.data.reportedUid is string
+                    && request.resource.data.reportedUid != request.auth.uid
+                    && request.resource.data.reason in [
+                         'harassment',
+                         'spam',
+                         'inappropriate_profile',
+                         'other'
+                       ]
+                    && request.resource.data.status == 'open'
+                    && request.resource.data.keys().hasOnly([
+                         'reporterUid',
+                         'reportedUid',
+                         'reportedDisplayName',
+                         'reason',
+                         'status',
+                         'createdAt'
+                       ]);
+      allow read, update, delete: if false;
+    }
+
+    // Private in-app contact channel to the developer/support team.
+    match /support_requests/{uid}/messages/{messageId} {
+      allow create: if isSelf(uid)
+                    && request.resource.data.category in [
+                         'support',
+                         'safety',
+                         'privacy',
+                         'other'
+                       ]
+                    && request.resource.data.message is string
+                    && request.resource.data.message.size() > 0
+                    && request.resource.data.message.size() <= 1500
+                    && request.resource.data.status == 'open'
+                    && request.resource.data.keys().hasOnly([
+                         'category',
+                         'message',
+                         'createdAt',
+                         'status'
+                       ]);
+      allow read: if isSelf(uid);
+      allow update, delete: if false;
     }
 
     // One-shot "wait until this friend's call ends" requests.
