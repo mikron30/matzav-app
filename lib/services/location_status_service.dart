@@ -22,6 +22,11 @@ class LocationStatusService {
   bool _drivingEnabled = true;
   bool _zonesEnabled = true;
   bool _awayEnabled = true;
+  bool _sleepEnabled = false;
+  bool _iosSleepInferred = false;
+  DateTime? _iosSleepStationarySince;
+  DateTime? _iosSleepStartedAt;
+  Position? _iosSleepStationaryAnchor;
   ActivityStatus _lastNonDriving = ActivityStatus.home;
   DateTime? _lastDebugPositionAt;
   String? _lastDebugZoneDecision;
@@ -32,6 +37,18 @@ class LocationStatusService {
   static const double _nativeStationarySpeedMps = 1.4; // ~5 km/h.
   static const double _nativeStationaryBaseRadiusM = 40;
 
+  // iOS has no public API that directly exposes "the user is sleeping".
+  // Infer it conservatively from the existing background location stream:
+  // at home + late-night window + prolonged stationarity.
+  static const _iosSleepInferenceDelay = Duration(minutes: 60);
+  static const _iosSleepMaxDuration = Duration(hours: 10);
+  static const double _iosSleepStationarySpeedMps = 0.8;
+  static const double _iosSleepWakeSpeedMps = 1.0;
+  static const double _iosSleepBaseRadiusM = 30;
+
+  bool get _isIosPlatform =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
   bool get running => _subscription != null;
 
   Future<bool> isAutomationEnabled() async {
@@ -40,7 +57,16 @@ class LocationStatusService {
   }
 
   void noteManualActivity(ActivityStatus activity) {
-    if (activity != ActivityStatus.driving) {
+    if (_isIosPlatform &&
+        _iosSleepInferred &&
+        activity != ActivityStatus.sleeping) {
+      _iosSleepInferred = false;
+      _resetIosSleepTracking();
+      unawaited(AutomaticStatusService.instance.setDerivedSleepActive(false));
+    }
+
+    if (activity != ActivityStatus.driving &&
+        activity != ActivityStatus.sleeping) {
       _lastNonDriving = activity;
       _debug('manual_activity_noted', {'activity': activity.name});
     }
@@ -55,16 +81,18 @@ class LocationStatusService {
     _drivingEnabled = featureSettings.driving;
     _zonesEnabled = featureSettings.zones;
     _awayEnabled = featureSettings.away;
+    _sleepEnabled = _isIosPlatform && featureSettings.sleep;
 
     _debug('start_requested', {
       'currentActivity': currentActivity.name,
       'drivingEnabled': _drivingEnabled,
       'zonesEnabled': _zonesEnabled,
       'awayEnabled': _awayEnabled,
+      'sleepEnabled': _sleepEnabled,
       'alreadyRunning': _subscription != null,
     });
 
-    if (!featureSettings.locationEnabled) {
+    if (!featureSettings.locationEnabled && !_sleepEnabled) {
       await stop();
       _debug('start_skipped_location_features_off');
       return;
@@ -78,7 +106,8 @@ class LocationStatusService {
 
     _uid = uid;
     _driving = _drivingEnabled && currentActivity == ActivityStatus.driving;
-    if (currentActivity != ActivityStatus.driving) {
+    if (currentActivity != ActivityStatus.driving &&
+        currentActivity != ActivityStatus.sleeping) {
       _lastNonDriving = currentActivity;
     }
 
@@ -149,6 +178,7 @@ class LocationStatusService {
     _lastDebugPositionAt = null;
     _lastDebugZoneDecision = null;
     _resetNativeStationaryTracking();
+    _resetIosSleepTracking();
 
     _subscription = Geolocator.getPositionStream(locationSettings: settings)
         .listen(
@@ -188,6 +218,7 @@ class LocationStatusService {
       'drivingEnabled': featureSettings.driving,
       'zonesEnabled': featureSettings.zones,
       'awayEnabled': featureSettings.away,
+      'sleepEnabled': _isIosPlatform && featureSettings.sleep,
     });
 
     if (!featureSettings.driving && currentActivity == ActivityStatus.driving) {
@@ -219,11 +250,16 @@ class LocationStatusService {
     });
     await _subscription?.cancel();
     _subscription = null;
+    if (_isIosPlatform && _iosSleepInferred) {
+      await AutomaticStatusService.instance.setDerivedSleepActive(false);
+    }
     _uid = null;
     _fastSamples = 0;
     _slowSamples = 0;
     _driving = false;
+    _iosSleepInferred = false;
     _resetNativeStationaryTracking();
+    _resetIosSleepTracking();
   }
 
   Future<void> disable() => stop(rememberOff: true);
@@ -243,6 +279,11 @@ class LocationStatusService {
         'slowSamples': _slowSamples,
         'lastNonDriving': _lastNonDriving.name,
       });
+    }
+
+    if (_sleepEnabled && _isIosPlatform) {
+      final sleepActive = await _updateIosSleepInference(uid, position, now);
+      if (sleepActive) return;
     }
 
     if (await AutomaticStatusService.instance.isOverrideActiveNow()) {
@@ -449,6 +490,103 @@ class LocationStatusService {
         uid: uid,
         activity: locationActivity,
       );
+    }
+  }
+
+  Future<bool> _updateIosSleepInference(
+    String uid,
+    Position position,
+    DateTime now,
+  ) async {
+    final atHome = await _isInsideSavedHome(uid, position);
+    final speed = position.speed < 0 ? 0.0 : position.speed;
+
+    final canStartTonight = now.hour >= 22 || now.hour < 4;
+    final insideActiveSleepWindow = now.hour >= 21 || now.hour < 11;
+
+    if (_iosSleepInferred) {
+      final exceededMaxDuration = _iosSleepStartedAt != null &&
+          now.difference(_iosSleepStartedAt!) >= _iosSleepMaxDuration;
+      final shouldWake = !atHome ||
+          !insideActiveSleepWindow ||
+          exceededMaxDuration ||
+          speed > _iosSleepWakeSpeedMps;
+
+      if (shouldWake) {
+        _debug('ios_sleep_exit', {
+          ..._positionData(position),
+          'atHome': atHome,
+          'insideSleepWindow': insideActiveSleepWindow,
+          'exceededMaxDuration': exceededMaxDuration,
+        });
+        _iosSleepInferred = false;
+        _resetIosSleepTracking();
+        await AutomaticStatusService.instance.setDerivedSleepActive(false);
+        return false;
+      }
+      return true;
+    }
+
+    if (!atHome || !canStartTonight || speed > _iosSleepStationarySpeedMps) {
+      _resetIosSleepTracking();
+      return false;
+    }
+
+    final anchor = _iosSleepStationaryAnchor;
+    if (_iosSleepStationarySince == null || anchor == null) {
+      _iosSleepStationarySince = now;
+      _iosSleepStationaryAnchor = position;
+      _debug('ios_sleep_stationary_started', {
+        ..._positionData(position),
+        'delayMinutes': _iosSleepInferenceDelay.inMinutes,
+      });
+      return false;
+    }
+
+    final movedM = Geolocator.distanceBetween(
+      anchor.latitude,
+      anchor.longitude,
+      position.latitude,
+      position.longitude,
+    );
+    final movementThresholdM = _iosSleepBaseRadiusM +
+        anchor.accuracy +
+        position.accuracy;
+
+    if (movedM > movementThresholdM) {
+      _iosSleepStationarySince = now;
+      _iosSleepStationaryAnchor = position;
+      _debug('ios_sleep_stationary_reset', {
+        ..._positionData(position),
+        'movedM': double.parse(movedM.toStringAsFixed(1)),
+        'movementThresholdM': double.parse(
+          movementThresholdM.toStringAsFixed(1),
+        ),
+      });
+      return false;
+    }
+
+    if (now.difference(_iosSleepStationarySince!) <
+        _iosSleepInferenceDelay) {
+      return false;
+    }
+
+    _iosSleepInferred = true;
+    _iosSleepStartedAt = now;
+    _debug('ios_sleep_enter', {
+      ..._positionData(position),
+      'stationaryMinutes':
+          now.difference(_iosSleepStationarySince!).inMinutes,
+    });
+    await AutomaticStatusService.instance.setDerivedSleepActive(true);
+    return true;
+  }
+
+  void _resetIosSleepTracking() {
+    _iosSleepStationarySince = null;
+    _iosSleepStationaryAnchor = null;
+    if (!_iosSleepInferred) {
+      _iosSleepStartedAt = null;
     }
   }
 
