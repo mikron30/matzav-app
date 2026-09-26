@@ -79,10 +79,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _loadSettingsState() async {
     var automation = await AutomationPreferences.instance.load();
-    if (_isIos && automation.sleep) {
-      automation = automation.copyWith(sleep: false);
-      await AutomationPreferences.instance.save(automation);
-    }
     final zones = await UserRepository.instance.getZones(uid);
     if (!mounted) return;
     setState(() {
@@ -141,7 +137,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         zones: value,
         away: value,
         calls: value,
-        sleep: _isIos ? false : value,
+        sleep: value,
       ),
       message: value
           ? 'כל אפשרויות הזיהוי האוטומטי הנתמכות הופעלו.'
@@ -317,20 +313,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final supportedAutomationEnabled = _isIos
-        ? (_automation.driving ||
-            _automation.zones ||
-            _automation.away ||
-            _automation.calls)
-        : _automation.anyEnabled;
-    final supportedAutomationAllEnabled = _isIos
-        ? (_automation.driving &&
-            _automation.zones &&
-            _automation.away &&
-            _automation.calls)
-        : _automation.allEnabled;
+    final supportedAutomationEnabled = _automation.anyEnabled;
+    final supportedAutomationAllEnabled = _automation.allEnabled;
     final masterSubtitle = supportedAutomationAllEnabled
-        ? (_isIos ? 'כל ארבעת הזיהויים פעילים' : 'כל חמשת הזיהויים פעילים')
+        ? 'כל חמשת הזיהויים פעילים'
         : supportedAutomationEnabled
         ? 'חלק מהזיהויים פעילים — אפשר לשלוט בכל אחד בנפרד'
         : 'כל הזיהויים כבויים';
@@ -523,23 +509,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           'מספר, יומן שיחות או תוכן שיחה.',
                   ),
                 ),
-                if (!_isIos) ...[
-                  const Divider(height: 1),
-                  SwitchListTile.adaptive(
-                    value: _automation.sleep,
-                    onChanged: _automationBusy
-                        ? null
-                        : (value) => _applyAutomationSettings(
-                              _automation.copyWith(sleep: value),
-                            ),
-                    secondary: const Icon(Icons.bedtime_outlined),
-                    title: const Text('זיהוי שינה'),
-                    subtitle: const Text(
-                      'משתמש בזיהוי השינה ובחיישני המכשיר; אם המידע '
-                      'לא זמין, מופעל fallback שמרני של חוסר שימוש.',
-                    ),
+                const Divider(height: 1),
+                SwitchListTile.adaptive(
+                  value: _automation.sleep,
+                  onChanged: _automationBusy
+                      ? null
+                      : (value) => _applyAutomationSettings(
+                            _automation.copyWith(sleep: value),
+                          ),
+                  secondary: const Icon(Icons.bedtime_outlined),
+                  title: const Text('זיהוי שינה'),
+                  subtitle: Text(
+                    _isIos
+                        ? 'מזהה שינה באופן משוער כאשר המכשיר נשאר בבית ללא '
+                          'תנועה ממושכת בשעות הלילה. לא נקרא מידע רפואי או '
+                          'נתוני HealthKit.'
+                        : 'משתמש בזיהוי השינה ובחיישני המכשיר; אם המידע '
+                          'לא זמין, מופעל fallback שמרני של חוסר שימוש.',
                   ),
-                ],
+                ),
               ],
             ),
           ),
@@ -548,11 +536,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               leading: const Icon(Icons.do_not_disturb_on_outlined),
               title: const Text('נא לא להפריע בזמן עסוק'),
               subtitle: Text(
-                _isIos
-                    ? 'בפגישה או בשיחה הזמינות עוברת אוטומטית ל־"נא לא '
-                      'להפריע" וחוזרת לערך שהיה לפני כן בסיום.'
-                    : 'בשינה, בפגישה או בשיחה הזמינות עוברת אוטומטית ל־'
-                      '"נא לא להפריע" וחוזרת לערך שהיה לפני כן בסיום.',
+                'בשינה, בפגישה או בשיחה הזמינות עוברת אוטומטית ל־'
+                '"נא לא להפריע" וחוזרת לערך שהיה לפני כן בסיום.',
               ),
             ),
           ),
@@ -740,13 +725,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Text(
-                _isIos
-                    ? 'אפשר להפעיל כל מנגנון זיהוי בנפרד. המתג העליון מפעיל '
-                      'או מכבה את ארבעת המנגנונים הנתמכים ב־iOS. זיהוי '
-                      '"לא בבית" דורש שמיקום הבית יהיה שמור.'
-                    : 'אפשר להפעיל כל מנגנון זיהוי בנפרד. המתג העליון מפעיל '
-                      'או מכבה את חמשתם יחד. זיהוי "לא בבית" דורש שמיקום '
-                      'הבית יהיה שמור.',
+                'אפשר להפעיל כל מנגנון זיהוי בנפרד. המתג העליון מפעיל '
+                'או מכבה את חמשתם יחד. זיהוי "לא בבית" וזיהוי השינה ב־iOS '
+                'דורשים שמיקום הבית יהיה שמור.',
               ),
             ),
           ),
