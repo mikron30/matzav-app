@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -137,9 +138,11 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!enabled || !mounted) return;
 
     try {
-      // Native vehicle detection needs Physical Activity, not a GPS stream.
-      // Start it even if location services are disabled or GPS is denied.
-      await AutomaticStatusService.instance.start(uid: uid);
+      // Android has native driving/call/sleep detectors. iOS uses the
+      // background Core Location stream below for its supported automations.
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+        await AutomaticStatusService.instance.start(uid: uid);
+      }
       final snapshot = await UserRepository.instance.profileStream(uid).first;
       final activity = activityFromString(snapshot.data()?['activity'] as String?);
       await LocationStatusService.instance.start(
@@ -163,13 +166,17 @@ class _HomeScreenState extends State<HomeScreen> {
     final prefs = await SharedPreferences.getInstance();
     try {
       if (value) {
-        await AutomaticStatusService.instance.start(uid: uid);
+        if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+          await AutomaticStatusService.instance.start(uid: uid);
+        }
         await LocationStatusService.instance.start(
           uid: uid,
           currentActivity: currentActivity,
         );
       } else {
-        await AutomaticStatusService.instance.stop();
+        if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+          await AutomaticStatusService.instance.stop();
+        }
         await LocationStatusService.instance.disable();
       }
       await prefs.setBool('matzav_automation_enabled_v25', value);
