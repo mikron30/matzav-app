@@ -466,6 +466,120 @@ class _FriendsSection extends StatelessWidget {
     }
   }
 
+  Future<void> _reportFriend(
+    BuildContext context, {
+    required String friendUid,
+    required String friendName,
+  }) async {
+    final reason = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const ListTile(
+              title: Text(
+                'דיווח על משתמש',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              subtitle: Text(
+                'הדיווח נשלח לצוות Matzav לבדיקה ואינו מוצג למשתמש.',
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.warning_amber_outlined),
+              title: const Text('הטרדה או התנהגות פוגענית'),
+              onTap: () => Navigator.of(sheetContext).pop('harassment'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.mark_email_unread_outlined),
+              title: const Text('ספאם'),
+              onTap: () => Navigator.of(sheetContext).pop('spam'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.account_circle_outlined),
+              title: const Text('פרופיל או שם לא ראויים'),
+              onTap: () =>
+                  Navigator.of(sheetContext).pop('inappropriate_profile'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.flag_outlined),
+              title: const Text('סיבה אחרת'),
+              onTap: () => Navigator.of(sheetContext).pop('other'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (reason == null || !context.mounted) return;
+
+    try {
+      await UserRepository.instance.reportUser(
+        reporterUid: uid,
+        reportedUid: friendUid,
+        reason: reason,
+        reportedDisplayName: friendName,
+      );
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('הדיווח על $friendName נשלח לבדיקה.')),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('לא ניתן לשלוח את הדיווח: $error')),
+      );
+    }
+  }
+
+  Future<void> _blockFriend(
+    BuildContext context, {
+    required String friendId,
+    required String friendUid,
+    required String friendName,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('חסימת משתמש'),
+        content: Text(
+          'לחסום את $friendName?\n\n'
+          'המשתמש יוסר מרשימת החברים והקשר לא ייווצר מחדש כל עוד החסימה פעילה.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('ביטול'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('חסום'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    try {
+      await UserRepository.instance.blockUser(
+        blockerUid: uid,
+        blockedUid: friendUid,
+        friendId: friendId,
+      );
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$friendName נחסם והוסר מרשימת החברים.')),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('לא ניתן לחסום את המשתמש: $error')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -562,6 +676,17 @@ class _FriendsSection extends StatelessWidget {
                       onRemove: (name) => _removeFriend(
                         context,
                         friendId: doc.id,
+                        friendName: name,
+                      ),
+                      onReport: (friendUid, name) => _reportFriend(
+                        context,
+                        friendUid: friendUid,
+                        friendName: name,
+                      ),
+                      onBlock: (friendUid, name) => _blockFriend(
+                        context,
+                        friendId: doc.id,
+                        friendUid: friendUid,
                         friendName: name,
                       ),
                     ),
@@ -931,9 +1056,16 @@ class _MyStatusCard extends StatelessWidget {
 }
 
 class _FriendTile extends StatefulWidget {
-  const _FriendTile({required this.friend, required this.onRemove});
+  const _FriendTile({
+    required this.friend,
+    required this.onRemove,
+    required this.onReport,
+    required this.onBlock,
+  });
   final Map<String, dynamic> friend;
   final ValueChanged<String> onRemove;
+  final void Function(String friendUid, String name) onReport;
+  final void Function(String friendUid, String name) onBlock;
 
   @override
   State<_FriendTile> createState() => _FriendTileState();
@@ -1052,7 +1184,11 @@ class _FriendTileState extends State<_FriendTile> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   _callIcon(),
-                  _FriendMenu(onRemove: () => widget.onRemove(name)),
+                  _FriendMenu(
+                    onRemove: () => widget.onRemove(name),
+                    onReport: () => widget.onReport(friendUid, name),
+                    onBlock: () => widget.onBlock(friendUid, name),
+                  ),
                 ],
               ),
             ),
@@ -1106,7 +1242,11 @@ class _FriendTileState extends State<_FriendTile> {
               children: [
                 _callIcon(),
                 Text(availability.emoji, style: const TextStyle(fontSize: 22)),
-                _FriendMenu(onRemove: () => widget.onRemove(displayName)),
+                _FriendMenu(
+                  onRemove: () => widget.onRemove(displayName),
+                  onReport: () => widget.onReport(friendUid, displayName),
+                  onBlock: () => widget.onBlock(friendUid, displayName),
+                ),
               ],
             ),
           ),
@@ -1117,18 +1257,50 @@ class _FriendTileState extends State<_FriendTile> {
 }
 
 class _FriendMenu extends StatelessWidget {
-  const _FriendMenu({required this.onRemove});
+  const _FriendMenu({
+    required this.onRemove,
+    this.onReport,
+    this.onBlock,
+  });
+
   final VoidCallback onRemove;
+  final VoidCallback? onReport;
+  final VoidCallback? onBlock;
 
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<String>(
       tooltip: 'אפשרויות חבר',
       onSelected: (value) {
-        if (value == 'remove') onRemove();
+        switch (value) {
+          case 'report':
+            onReport?.call();
+          case 'block':
+            onBlock?.call();
+          case 'remove':
+            onRemove();
+        }
       },
-      itemBuilder: (context) => const [
-        PopupMenuItem(
+      itemBuilder: (context) => [
+        if (onReport != null)
+          const PopupMenuItem(
+            value: 'report',
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.flag_outlined),
+              title: Text('דווח על משתמש'),
+            ),
+          ),
+        if (onBlock != null)
+          const PopupMenuItem(
+            value: 'block',
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.block_outlined),
+              title: Text('חסום משתמש'),
+            ),
+          ),
+        const PopupMenuItem(
           value: 'remove',
           child: ListTile(
             contentPadding: EdgeInsets.zero,
