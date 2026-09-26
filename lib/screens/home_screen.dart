@@ -1279,13 +1279,12 @@ class _FriendMenu extends StatelessWidget {
     return PopupMenuButton<String>(
       tooltip: 'אפשרויות חבר',
       onSelected: (value) {
-        switch (value) {
-          case 'report':
-            onReport?.call();
-          case 'block':
-            onBlock?.call();
-          case 'remove':
-            onRemove();
+        if (value == 'report') {
+          onReport?.call();
+        } else if (value == 'block') {
+          onBlock?.call();
+        } else if (value == 'remove') {
+          onRemove();
         }
       },
       itemBuilder: (context) => [
