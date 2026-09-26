@@ -26,7 +26,12 @@ class CommunityModerationService {
     if (cleaned.length > 50) cleaned = cleaned.substring(0, 50).trim();
 
     final normalized = cleaned.toLowerCase();
-    if (_blockedTerms.any(normalized.contains)) {
+    final tokens = normalized
+        .replaceAll(RegExp(r'[^a-z0-9\u0590-\u05FF]+'), ' ')
+        .split(' ')
+        .where((token) => token.isNotEmpty)
+        .toSet();
+    if (_blockedTerms.any(tokens.contains)) {
       return 'משתמש Matzav';
     }
     return cleaned;
