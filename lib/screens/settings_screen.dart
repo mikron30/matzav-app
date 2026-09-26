@@ -99,8 +99,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) setState(() => _automation = settings);
 
     try {
-      // Android supports native call/sleep monitoring. iOS supports native
-      // CallKit call monitoring; sleep remains disabled there.
+      // Android supports native call/sleep monitoring. iOS uses CallKit for
+      // calls and the background-location service for conservative sleep inference.
       await AutomaticStatusService.instance.refresh(uid: uid);
 
       final snapshot = await UserRepository.instance.profileStream(uid).first;
