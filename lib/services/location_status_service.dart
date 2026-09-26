@@ -92,6 +92,14 @@ class LocationStatusService {
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
+    if (defaultTargetPlatform == TargetPlatform.iOS &&
+        permission == LocationPermission.whileInUse) {
+      // Background automation needs Always authorization. iOS may choose when
+      // to show the second-stage prompt; if it remains While In Use the app
+      // still works in the foreground and the user can upgrade it in Settings.
+      final upgraded = await Geolocator.requestPermission();
+      if (upgraded == LocationPermission.always) permission = upgraded;
+    }
     if (permission == LocationPermission.denied ||
         permission == LocationPermission.deniedForever) {
       _debug('start_failed_location_permission', {'permission': permission.name});
@@ -119,6 +127,15 @@ class LocationStatusService {
           enableWakeLock: true,
           enableWifiLock: false,
         ),
+      );
+    } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+      settings = const AppleSettings(
+        accuracy: LocationAccuracy.high,
+        activityType: ActivityType.other,
+        distanceFilter: 10,
+        pauseLocationUpdatesAutomatically: false,
+        showBackgroundLocationIndicator: true,
+        allowBackgroundLocationUpdates: true,
       );
     } else {
       settings = const LocationSettings(
