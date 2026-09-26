@@ -31,9 +31,9 @@
 	<key>NSContactsUsageDescription</key>
 	<string>אנחנו מציגים את אנשי הקשר רק כדי שתוכל לבחור חברים להוסיף.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>המיקום משמש לעדכון מצב אוטומטי גם כשהאפליקציה ברקע.</string>
+	<string>Matzav משתמשת במיקום ברקע כדי לזהות אוטומטית נסיעה וכניסה או יציאה מאזורים שהגדרת, ולעדכן את הסטטוס שלך לחברים.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>המיקום משמש לזיהוי נסיעה ואזורים שהגדרת.</string>
+	<string>Matzav משתמשת במיקום כדי לזהות נסיעה ואזורים שהגדרת לצורך עדכון אוטומטי של הסטטוס.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
