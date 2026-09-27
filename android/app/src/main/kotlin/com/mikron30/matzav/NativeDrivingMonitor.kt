@@ -88,6 +88,9 @@ object NativeDrivingMonitor {
     const val KEY_REVISION = "revision"
     const val KEY_PENDING = "pending_sync"
     const val KEY_HAS_STATE = "has_transition"
+    const val KEY_LAST_TRANSITION = "last_transition"
+    const val KEY_LAST_TRANSITION_AGE_MS = "last_transition_age_ms"
+    const val KEY_LAST_TRANSITION_RECEIVED_AT = "last_transition_received_at"
     const val ACTION_TRANSITION = "com.mikron30.matzav.DRIVING_TRANSITION"
     private const val DRIVING_PREFS = "matzav_native_driving_v43"
     private const val REQUEST_CODE = 44220
@@ -194,6 +197,16 @@ object NativeDrivingMonitor {
     @Synchronized
     fun recordState(context: Context, owner: String, active: Boolean) {
         val state = prefs(context)
+
+        // Duplicate ENTER/EXIT events can be delivered around process restarts
+        // or re-registration. Do not create a new revision or cloud write when
+        // the durable state already matches the event.
+        if (state.getString(KEY_OWNER, null) == owner &&
+            state.getBoolean(KEY_HAS_STATE, false) &&
+            state.getBoolean(KEY_ACTIVE, false) == active) {
+            return
+        }
+
         val editor = state.edit()
         if (active && !state.getBoolean(KEY_ACTIVE, false)) editor.remove("previous_activity")
         check(editor
@@ -203,6 +216,18 @@ object NativeDrivingMonitor {
             .putBoolean(KEY_PENDING, true)
             .putLong(KEY_REVISION, state.getLong(KEY_REVISION, 0L) + 1L)
             .commit()) { "Could not persist the driving transition" }
+    }
+
+    fun recordTransitionMetadata(
+        context: Context,
+        type: String,
+        ageMs: Long,
+    ) {
+        prefs(context).edit()
+            .putString(KEY_LAST_TRANSITION, type)
+            .putLong(KEY_LAST_TRANSITION_AGE_MS, ageMs)
+            .putLong(KEY_LAST_TRANSITION_RECEIVED_AT, System.currentTimeMillis())
+            .apply()
     }
 
     @Synchronized
@@ -335,7 +360,16 @@ class DrivingTransitionReceiver : BroadcastReceiver() {
             ActivityTransition.ACTIVITY_TRANSITION_EXIT -> false
             else -> return
         }
+        val eventAgeMs = (
+            (android.os.SystemClock.elapsedRealtimeNanos() - event.elapsedRealTimeNanos)
+                .coerceAtLeast(0L) / 1_000_000L
+        )
         val appContext = context.applicationContext
+        NativeDrivingMonitor.recordTransitionMetadata(
+            appContext,
+            if (active) "enter" else "exit",
+            eventAgeMs,
+        )
         if (!NativeDrivingMonitor.enabled(appContext) || !NativeDrivingMonitor.hasPermission(appContext)) return
         val pending = goAsync()
         executor.execute {
