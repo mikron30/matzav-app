@@ -365,6 +365,24 @@ class LocationStatusService {
         _resetNativeStationaryTracking();
       }
 
+      // Do not let a fresh native IN_VEHICLE classification turn a
+      // stationary user into "driving". This is especially important after
+      // Android/Google Play services restarts, where Activity Recognition can
+      // briefly restore an IN_VEHICLE state. Existing trips remain protected:
+      // when the profile/local state is already driving we keep it through
+      // traffic lights and only clear it after the stationary timeout above.
+      if (!_driving && _nativePositionLooksStationary(position)) {
+        _debug('native_driving_tentative_stationary', {
+          ..._positionData(position),
+          'stationarySeconds': _nativeStationarySince == null
+              ? 0
+              : now.difference(_nativeStationarySince!).inSeconds,
+        });
+        _fastSamples = 0;
+        _slowSamples = 0;
+        return;
+      }
+
       if (!_driving) {
         _driving = true;
         _debug('native_driving_recovery_publish', _positionData(position));
