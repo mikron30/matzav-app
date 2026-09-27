@@ -91,6 +91,9 @@ class NativeDiagnosticsProvider : ContentProvider(),
                 put("lastSyncResult", drive.getString("last_sync_result", null) ?: "none")
                 put("lastSyncAt", drive.getLong("last_sync_at", 0L))
                 put("lastSyncError", drive.getString("last_sync_error", null) ?: "none")
+                put("lastTransition", drive.getString("last_transition", null) ?: "none")
+                put("lastTransitionAgeMs", drive.getLong("last_transition_age_ms", -1L))
+                put("lastTransitionReceivedAt", drive.getLong("last_transition_received_at", 0L))
             })
 
             put("automatic", JSONObject().apply {
