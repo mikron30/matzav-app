@@ -158,7 +158,7 @@ class LocationStatusService {
         ),
       );
     } else if (defaultTargetPlatform == TargetPlatform.iOS) {
-      settings = const AppleSettings(
+      settings = AppleSettings(
         accuracy: LocationAccuracy.high,
         activityType: ActivityType.other,
         distanceFilter: 10,
