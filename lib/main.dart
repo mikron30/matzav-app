@@ -5,8 +5,8 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
-import 'firebase_options.dart';
 import 'screens/auth_screen.dart';
+import 'screens/community_safety_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/app_update_service.dart';
@@ -16,7 +16,7 @@ import 'services/user_repository.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final premiumService = PremiumService.instance;
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await Firebase.initializeApp();
   await ThemeService.instance.initialize();
   unawaited(premiumService.initialize());
   runApp(const MatzavApp());
@@ -111,7 +111,10 @@ class AuthGate extends StatelessWidget {
                 body: Center(child: CircularProgressIndicator()),
               );
             }
-            return const HomeScreen();
+            return CommunityTermsGate(
+              uid: user.uid,
+              child: const HomeScreen(),
+            );
           },
         );
       },

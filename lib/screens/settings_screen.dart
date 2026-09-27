@@ -1,4 +1,5 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -12,6 +13,7 @@ import '../services/diagnostic_export_service.dart';
 import '../services/location_status_service.dart';
 import '../services/premium_service.dart';
 import '../services/user_repository.dart';
+import 'community_safety_screen.dart';
 import 'premium_screen.dart';
 
 class ThemeService extends ChangeNotifier {
@@ -66,6 +68,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Map<String, dynamic> _zones = const {};
 
   String get uid => FirebaseAuth.instance.currentUser!.uid;
+  bool get _isIos =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
 
   @override
   void initState() {
@@ -74,7 +78,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _loadSettingsState() async {
-    final automation = await AutomationPreferences.instance.load();
+    var automation = await AutomationPreferences.instance.load();
     final zones = await UserRepository.instance.getZones(uid);
     if (!mounted) return;
     setState(() {
@@ -95,9 +99,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) setState(() => _automation = settings);
 
     try {
-      // Native call/sleep overrides are refreshed first. If one of them was
-      // just disabled while active, this restores the real activity before
-      // the location service snapshots its return state.
+      // Android supports native call/sleep monitoring. iOS uses CallKit for
+      // calls and the background-location service for conservative sleep inference.
       await AutomaticStatusService.instance.refresh(uid: uid);
 
       final snapshot = await UserRepository.instance.profileStream(uid).first;
@@ -137,7 +140,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         sleep: value,
       ),
       message: value
-          ? 'כל אפשרויות הזיהוי האוטומטי הופעלו.'
+          ? 'כל אפשרויות הזיהוי האוטומטי הנתמכות הופעלו.'
           : 'כל אפשרויות הזיהוי האוטומטי כובו.',
     );
   }
@@ -310,9 +313,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final masterSubtitle = _automation.allEnabled
+    final supportedAutomationEnabled = _automation.anyEnabled;
+    final supportedAutomationAllEnabled = _automation.allEnabled;
+    final masterSubtitle = supportedAutomationAllEnabled
         ? 'כל חמשת הזיהויים פעילים'
-        : _automation.anyEnabled
+        : supportedAutomationEnabled
         ? 'חלק מהזיהויים פעילים — אפשר לשלוט בכל אחד בנפרד'
         : 'כל הזיהויים כבויים';
 
@@ -432,7 +437,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Column(
               children: [
                 SwitchListTile.adaptive(
-                  value: _automation.anyEnabled,
+                  value: supportedAutomationEnabled,
                   onChanged: _automationBusy ? null : _setAllAutomation,
                   secondary: const Icon(Icons.auto_awesome_motion_outlined),
                   title: const Text('הפעל / כבה את הכל'),
@@ -448,9 +453,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                   secondary: const Icon(Icons.directions_car_outlined),
                   title: const Text('זיהוי נהיגה'),
-                  subtitle: const Text(
-                    'באנדרואיד מזהה נסיעה גם כשהאפליקציה סגורה. '
-                    'יש לאשר הרשאת "פעילות גופנית". GPS משמש גם לזיהוי לפי מהירות.',
+                  subtitle: Text(
+                    _isIos
+                        ? 'מזהה נסיעה אוטומטית לפי מהירות ושירותי המיקום. '
+                          'לאוטומציה ברקע יש לאשר גישה למיקום גם כשהאפליקציה אינה בשימוש.'
+                        : 'מזהה נסיעה גם כשהאפליקציה סגורה. יש לאשר הרשאת '
+                          '"פעילות גופנית". GPS משמש גם לזיהוי לפי מהירות.',
                   ),
                 ),
                 const Divider(height: 1),
@@ -493,9 +501,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                   secondary: const Icon(Icons.phone_in_talk_outlined),
                   title: const Text('זיהוי שיחה'),
-                  subtitle: const Text(
-                    'מזהה שיחת טלפון או VoIP ומציג "בשיחה", בלי לקרוא '
-                    'מספר, יומן שיחות או תוכן שיחה.',
+                  subtitle: Text(
+                    _isIos
+                        ? 'מזהה שיחה פעילה דרך CallKit ומציג "בשיחה", בלי '
+                          'לקרוא מספר טלפון, זהות מתקשר, יומן שיחות או תוכן.'
+                        : 'מזהה שיחת טלפון או VoIP ומציג "בשיחה", בלי לקרוא '
+                          'מספר, יומן שיחות או תוכן שיחה.',
                   ),
                 ),
                 const Divider(height: 1),
@@ -508,21 +519,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                   secondary: const Icon(Icons.bedtime_outlined),
                   title: const Text('זיהוי שינה'),
-                  subtitle: const Text(
-                    'משתמש ב־Google Sleep API ובחיישני המכשיר; אם המידע '
-                    'לא זמין, מופעל fallback שמרני של חוסר שימוש.',
+                  subtitle: Text(
+                    _isIos
+                        ? 'מזהה שינה באופן משוער כאשר המכשיר נשאר בבית ללא '
+                          'תנועה ממושכת בשעות הלילה. לא נקרא מידע רפואי או '
+                          'נתוני HealthKit.'
+                        : 'משתמש בזיהוי השינה ובחיישני המכשיר; אם המידע '
+                          'לא זמין, מופעל fallback שמרני של חוסר שימוש.',
                   ),
                 ),
               ],
             ),
           ),
-          const Card(
+          Card(
             child: ListTile(
-              leading: Icon(Icons.do_not_disturb_on_outlined),
-              title: Text('נא לא להפריע בזמן עסוק'),
+              leading: const Icon(Icons.do_not_disturb_on_outlined),
+              title: const Text('נא לא להפריע בזמן עסוק'),
               subtitle: Text(
-                'בשינה, בפגישה או בשיחה הזמינות עוברת אוטומטית ל־"נא לא '
-                'להפריע" וחוזרת לערך שהיה לפני כן בסיום.',
+                'בשינה, בפגישה או בשיחה הזמינות עוברת אוטומטית ל־'
+                '"נא לא להפריע" וחוזרת לערך שהיה לפני כן בסיום.',
               ),
             ),
           ),
@@ -631,6 +646,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 24),
           Text(
+            'קהילה ובטיחות',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.policy_outlined),
+                  title: const Text('כללי קהילה ותנאי שימוש'),
+                  subtitle: const Text(
+                    'אפס סובלנות לתוכן פוגעני, הטרדה ושימוש לרעה.',
+                  ),
+                  trailing: const Icon(Icons.chevron_left),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => CommunityTermsScreen(
+                        uid: uid,
+                        readOnly: true,
+                      ),
+                    ),
+                  ),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.support_agent_outlined),
+                  title: const Text('צור קשר עם התמיכה'),
+                  subtitle: const Text(
+                    'תמיכה, פרטיות, בטיחות או דיווח כללי.',
+                  ),
+                  trailing: const Icon(Icons.chevron_left),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => SupportContactScreen(uid: uid),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
             'חשבון',
             style: Theme.of(context).textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.bold,
@@ -662,13 +721,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           const SizedBox(height: 16),
-          const Card(
+          Card(
             child: Padding(
-              padding: EdgeInsets.all(16),
+              padding: const EdgeInsets.all(16),
               child: Text(
-                'אפשר להפעיל כל מנגנון זיהוי בנפרד. המתג העליון מפעיל או '
-                'מכבה את חמשתם יחד. זיהוי "לא בבית" דורש שמיקום הבית '
-                'יהיה שמור.',
+                'אפשר להפעיל כל מנגנון זיהוי בנפרד. המתג העליון מפעיל '
+                'או מכבה את חמשתם יחד. זיהוי "לא בבית" וזיהוי השינה ב־iOS '
+                'דורשים שמיקום הבית יהיה שמור.',
               ),
             ),
           ),
