@@ -2,9 +2,11 @@ import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
+import 'firebase_options.dart';
 import 'screens/auth_screen.dart';
 import 'screens/community_safety_screen.dart';
 import 'screens/home_screen.dart';
@@ -52,14 +54,20 @@ class _MatzavBootstrapAppState extends State<MatzavBootstrapApp> {
 
     try {
       try {
-        if (Firebase.apps.isEmpty) {
-          await Firebase.initializeApp().timeout(const Duration(seconds: 12));
+        if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+          // The iOS Xcode project does not bundle GoogleService-Info.plist as
+          // an app resource. Initialize explicitly from FlutterFire options so
+          // App Store/TestFlight installs do not depend on native plist lookup.
+          await Firebase.initializeApp(
+            options: DefaultFirebaseOptions.ios,
+          ).timeout(const Duration(seconds: 12));
         } else {
-          Firebase.app();
+          // Android already has its native Firebase configuration and should
+          // keep using it to avoid the duplicate-[DEFAULT] issue seen before.
+          await Firebase.initializeApp().timeout(const Duration(seconds: 12));
         }
       } on FirebaseException catch (error) {
-        // Some native Firebase configurations may already create [DEFAULT].
-        // In that case use the existing app instead of failing startup.
+        // If a native SDK already created [DEFAULT], use it rather than fail.
         if (error.code != 'duplicate-app') rethrow;
         Firebase.app();
       }
