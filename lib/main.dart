@@ -15,11 +15,149 @@ import 'services/user_repository.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final premiumService = PremiumService.instance;
-  await Firebase.initializeApp();
-  await ThemeService.instance.initialize();
-  unawaited(premiumService.initialize());
-  runApp(const MatzavApp());
+
+  // Render immediately. Previously Firebase/theme initialization happened
+  // before runApp(), so any plugin/configuration error left iOS showing only
+  // a completely blank white Flutter view with no way to diagnose or retry.
+  runApp(const MatzavBootstrapApp());
+}
+
+class MatzavBootstrapApp extends StatefulWidget {
+  const MatzavBootstrapApp({super.key});
+
+  @override
+  State<MatzavBootstrapApp> createState() => _MatzavBootstrapAppState();
+}
+
+class _MatzavBootstrapAppState extends State<MatzavBootstrapApp> {
+  bool _ready = false;
+  bool _starting = true;
+  String _stage = 'מפעיל את Matzav…';
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_bootstrap());
+  }
+
+  Future<void> _bootstrap() async {
+    if (mounted) {
+      setState(() {
+        _starting = true;
+        _error = null;
+        _stage = 'מתחבר לשירותי האפליקציה…';
+      });
+    }
+
+    try {
+      try {
+        if (Firebase.apps.isEmpty) {
+          await Firebase.initializeApp().timeout(const Duration(seconds: 12));
+        } else {
+          Firebase.app();
+        }
+      } on FirebaseException catch (error) {
+        // Some native Firebase configurations may already create [DEFAULT].
+        // In that case use the existing app instead of failing startup.
+        if (error.code != 'duplicate-app') rethrow;
+        Firebase.app();
+      }
+
+      if (mounted) {
+        setState(() => _stage = 'טוען הגדרות…');
+      }
+
+      // Theme preferences are useful but must never prevent the app opening.
+      try {
+        await ThemeService.instance
+            .initialize()
+            .timeout(const Duration(seconds: 5));
+      } catch (_) {
+        // Continue with the default light theme.
+      }
+
+      // Store initialization is deliberately non-blocking.
+      unawaited(PremiumService.instance.initialize());
+
+      if (!mounted) return;
+      setState(() {
+        _ready = true;
+        _starting = false;
+        _error = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _starting = false;
+        _error = error;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_ready) return const MatzavApp();
+
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'Matzav',
+      home: Scaffold(
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(28),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 480),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.check_circle_outline, size: 72),
+                    const SizedBox(height: 22),
+                    const Text(
+                      'Matzav',
+                      style: TextStyle(
+                        fontSize: 32,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                    if (_starting) ...[
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 18),
+                      Text(_stage, textAlign: TextAlign.center),
+                    ] else ...[
+                      const Icon(Icons.error_outline, size: 48),
+                      const SizedBox(height: 14),
+                      const Text(
+                        'לא הצלחנו להשלים את הפעלת האפליקציה.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        _error?.toString() ?? 'Startup error',
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 20),
+                      FilledButton.icon(
+                        onPressed: _bootstrap,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('נסה שוב'),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class MatzavApp extends StatelessWidget {
@@ -111,6 +249,13 @@ class AuthGate extends StatelessWidget {
                 body: Center(child: CircularProgressIndicator()),
               );
             }
+
+            if (ensureSnapshot.hasError) {
+              return _ProfileStartupError(
+                error: ensureSnapshot.error,
+              );
+            }
+
             return CommunityTermsGate(
               uid: user.uid,
               child: const HomeScreen(),
@@ -118,6 +263,53 @@ class AuthGate extends StatelessWidget {
           },
         );
       },
+    );
+  }
+}
+
+class _ProfileStartupError extends StatelessWidget {
+  const _ProfileStartupError({required this.error});
+
+  final Object? error;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.cloud_off_outlined, size: 56),
+                const SizedBox(height: 16),
+                const Text(
+                  'לא ניתן לטעון את החשבון כרגע.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  error?.toString() ?? 'Profile initialization error',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 18),
+                FilledButton.icon(
+                  onPressed: () async {
+                    await FirebaseAuth.instance.signOut();
+                  },
+                  icon: const Icon(Icons.logout),
+                  label: const Text('חזור למסך הכניסה'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
