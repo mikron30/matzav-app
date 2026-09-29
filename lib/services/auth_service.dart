@@ -1,5 +1,8 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+
+import '../firebase_options.dart';
 
 class AuthService {
   AuthService._();
@@ -12,7 +15,15 @@ class AuthService {
   User? get currentUser => _auth.currentUser;
 
   GoogleSignIn get _google {
-    return _googleSignIn ??= GoogleSignIn();
+    if (_googleSignIn != null) return _googleSignIn!;
+
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      return _googleSignIn = GoogleSignIn(
+        clientId: DefaultFirebaseOptions.ios.iosClientId,
+      );
+    }
+
+    return _googleSignIn = GoogleSignIn();
   }
 
   Future<UserCredential> signInWithEmail(String email, String password) {
