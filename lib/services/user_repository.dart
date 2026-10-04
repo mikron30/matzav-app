@@ -201,6 +201,22 @@ class UserRepository {
         .set(data, SetOptions(merge: true));
   }
 
+  /// Ends an automatically detected driving session and clears the native
+  /// ownership markers in the same Firestore write. This is intentionally
+  /// separate from [updateStatus]: a late Flutter/native driving write must not
+  /// leave the profile looking owned by a trip that already ended.
+  Future<void> finishAutomaticDriving({
+    required String uid,
+    required ActivityStatus activity,
+  }) async {
+    await _db.collection('profiles').doc(uid).set({
+      'activity': activity.name,
+      'nativeDrivingDetected': FieldValue.delete(),
+      'nativeDrivingPreviousActivity': FieldValue.delete(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
   Stream<QuerySnapshot<Map<String, dynamic>>> friendsStream(String uid) {
     return _db
         .collection('users')
