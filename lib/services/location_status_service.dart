@@ -392,26 +392,73 @@ class LocationStatusService {
         // Mirror the state through Flutter as well. Firestore's client cache
         // makes the local UI react immediately and keeps the write pending for
         // the next connection, while Android also gets a fresh native retry.
-        unawaited(
-          UserRepository.instance
-              .updateStatus(uid: uid, activity: ActivityStatus.driving)
-              .then(
-                (_) => _debug(
-                  'native_driving_recovery_publish_done',
-                  _positionData(position),
-                ),
-              )
-              .catchError(
-                (Object error) => _debug(
-                  'native_driving_recovery_publish_failed',
-                  {'error': error.toString(), ..._positionData(position)},
-                ),
-              ),
-        );
+        unawaited(() async {
+          try {
+            await UserRepository.instance.updateStatus(
+              uid: uid,
+              activity: ActivityStatus.driving,
+            );
+            _debug(
+              'native_driving_recovery_publish_done',
+              _positionData(position),
+            );
+
+            // EXIT can arrive while the Firestore write above is still in
+            // flight. Re-check the durable native state after the write and
+            // immediately undo a stale "driving" publish if the trip ended.
+            final stillDriving =
+                await AutomaticStatusService.instance.isNativeDrivingActive();
+            if (!stillDriving) {
+              final nextActivity =
+                  await _activityAfterDrivingStops(uid, position);
+              _debug('native_driving_recovery_race_exit', {
+                ..._positionData(position),
+                'nextActivity': nextActivity.name,
+              });
+              _driving = false;
+              _fastSamples = 0;
+              _slowSamples = 0;
+              _lastNonDriving = nextActivity;
+              await UserRepository.instance.finishAutomaticDriving(
+                uid: uid,
+                activity: nextActivity,
+              );
+            }
+          } catch (error) {
+            _debug(
+              'native_driving_recovery_publish_failed',
+              {'error': error.toString(), ..._positionData(position)},
+            );
+          }
+        }());
         unawaited(AutomaticStatusService.instance.requestNativeDrivingSync());
       }
       _fastSamples = 0;
       _slowSamples = 0;
+      return;
+    }
+
+    // If Android has already delivered an explicit EXIT but the cloud/local
+    // profile is still "driving", do not wait for three GPS samples when we
+    // have strong evidence that the phone is stationary inside the saved home.
+    // The diagnostic case from build 57 had native=false, lastTransition=exit,
+    // speed ~1.7 km/h and home distance ~3 m while the profile stayed driving.
+    if (_driving &&
+        _nativePositionLooksStationary(position) &&
+        await _isInsideSavedHome(uid, position)) {
+      final nextActivity = await _activityAfterDrivingStops(uid, position);
+      _debug('native_exit_home_profile_recovery', {
+        ..._positionData(position),
+        'nextActivity': nextActivity.name,
+      });
+      _driving = false;
+      _fastSamples = 0;
+      _slowSamples = 0;
+      _lastNonDriving = nextActivity;
+      await UserRepository.instance.finishAutomaticDriving(
+        uid: uid,
+        activity: nextActivity,
+      );
       return;
     }
 
@@ -671,7 +718,7 @@ class LocationStatusService {
     _resetNativeStationaryTracking();
     _lastNonDriving = nextActivity;
 
-    await UserRepository.instance.updateStatus(
+    await UserRepository.instance.finishAutomaticDriving(
       uid: uid,
       activity: nextActivity,
     );
