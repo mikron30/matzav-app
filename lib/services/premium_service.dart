@@ -4,9 +4,8 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-/// The entitlement is deliberately unknown until the local cache is loaded.
+/// The entitlement is deliberately unknown until the store reports its status.
 /// Callers must only unlock premium behavior for [EntitlementStatus.premium].
 enum EntitlementStatus { unknown, free, premium }
 
@@ -16,11 +15,8 @@ enum EntitlementStatus { unknown, free, premium }
 /// application startup. The purchase stream subscription is installed
 /// synchronously in the constructor, before any store or preferences work.
 class PremiumService extends ChangeNotifier {
-  PremiumService({
-    InAppPurchase? inAppPurchase,
-    SharedPreferencesAsync? preferences,
-  }) : _inAppPurchase = inAppPurchase ?? InAppPurchase.instance,
-       _preferences = preferences ?? SharedPreferencesAsync() {
+  PremiumService({InAppPurchase? inAppPurchase})
+    : _inAppPurchase = inAppPurchase ?? InAppPurchase.instance {
     _purchaseSubscription = _inAppPurchase.purchaseStream.listen(
       _handlePurchaseUpdates,
       onError: _handlePurchaseStreamError,
@@ -28,13 +24,10 @@ class PremiumService extends ChangeNotifier {
   }
 
   static const String productId = 'matzav_premium';
-  static const String _entitlementCacheKey =
-      'premium_entitlement_matzav_premium_v1';
 
   static final PremiumService instance = PremiumService();
 
   final InAppPurchase _inAppPurchase;
-  final SharedPreferencesAsync _preferences;
   late final StreamSubscription<List<PurchaseDetails>> _purchaseSubscription;
 
   EntitlementStatus _entitlementStatus = EntitlementStatus.unknown;
@@ -73,7 +66,7 @@ class PremiumService extends ChangeNotifier {
     return sha256.convert(utf8.encode(normalizedUid)).toString();
   }
 
-  /// Loads the cached entitlement and product information.
+  /// Loads the store entitlement and product information.
   ///
   /// Supply either a raw [uid], which is SHA-256 hashed here, or an already
   /// opaque [hashedUid]. Supplying neither is supported for restore flows that
@@ -84,35 +77,16 @@ class PremiumService extends ChangeNotifier {
   }
 
   Future<void> _initialize() async {
-    _isLoading = true;
-    _notifyListeners();
-
-    try {
-      final cachedPremium =
-          await _preferences.getBool(_entitlementCacheKey) ?? false;
-      // A purchase update may have granted premium while preferences loaded.
-      if (_entitlementStatus != EntitlementStatus.premium) {
-        _entitlementStatus = cachedPremium
-            ? EntitlementStatus.premium
-            : EntitlementStatus.unknown;
-      }
-    } catch (error) {
-      _errorMessage = 'לא ניתן היה לקרוא את סטטוס הפרימיום: $error';
-    } finally {
-      _isInitialized = true;
-      _isLoading = false;
-      _notifyListeners();
-    }
-
     await refreshStore();
     // Keep ads disabled while an Android restore result is still on its way.
     // If the store cannot perform that check, use the free entitlement so the
     // rest of the app remains usable offline.
     if (_entitlementStatus == EntitlementStatus.unknown &&
         !_awaitingRestoreResult) {
-      await _setFreeEntitlement();
-      _notifyListeners();
+      _setFreeEntitlement();
     }
+    _isInitialized = true;
+    _notifyListeners();
   }
 
   /// Rechecks store availability and loads the localized product and price.
@@ -241,7 +215,7 @@ class PremiumService extends ChangeNotifier {
     if (premiumPurchases.isEmpty) {
       if (_awaitingRestoreResult) {
         _awaitingRestoreResult = false;
-        await _setFreeEntitlement();
+        _setFreeEntitlement();
         _notifyListeners();
       }
       return;
@@ -258,20 +232,26 @@ class PremiumService extends ChangeNotifier {
         case PurchaseStatus.purchased:
         case PurchaseStatus.restored:
           final verified = _verifyPurchaseForMvp(purchase);
-          if (verified) {
-            _errorMessage = null;
-            await _grantPremium();
-            if (purchase.pendingCompletePurchase) {
-              try {
-                await _inAppPurchase.completePurchase(purchase);
-              } catch (error) {
-                _errorMessage =
-                    'הרכישה התקבלה אך לא ניתן היה להשלים אותה: $error';
-              }
-            }
-          } else {
+          if (!verified) {
             _errorMessage = 'לא ניתן לאמת את רכישת הפרימיום.';
+            continue;
           }
+
+          // The premium entitlement is only unlocked after the platform
+          // transaction is acknowledged and closed. Granting earlier can enable
+          // premium features before the purchase flow is actually complete.
+          if (purchase.pendingCompletePurchase) {
+            try {
+              await _inAppPurchase.completePurchase(purchase);
+            } catch (error) {
+              _errorMessage =
+                  'הרכישה התקבלה אך לא ניתן היה להשלים אותה: $error';
+              continue;
+            }
+          }
+
+          _errorMessage = null;
+          _grantPremium();
         case PurchaseStatus.error:
           _errorMessage =
               purchase.error?.message ?? 'אירעה שגיאה במהלך הרכישה.';
@@ -285,33 +265,22 @@ class PremiumService extends ChangeNotifier {
     _notifyListeners();
   }
 
-  /// MVP-only local verification.
+  /// MVP-only sanity check of a store-reported transaction.
   ///
   /// Production must send serverVerificationData to a trusted backend and
   /// verify it with Google Play/App Store before granting the entitlement.
-  /// Client-side checks and SharedPreferences can be modified by an attacker.
+  /// A client-side check alone can be bypassed.
   bool _verifyPurchaseForMvp(PurchaseDetails purchase) {
     return purchase.productID == productId &&
         purchase.verificationData.serverVerificationData.isNotEmpty;
   }
 
-  Future<void> _grantPremium() async {
+  void _grantPremium() {
     _entitlementStatus = EntitlementStatus.premium;
-    try {
-      await _preferences.setBool(_entitlementCacheKey, true);
-    } catch (error) {
-      _errorMessage =
-          'הפרימיום הופעל, אך לא ניתן היה לשמור אותו במכשיר: $error';
-    }
   }
 
-  Future<void> _setFreeEntitlement() async {
+  void _setFreeEntitlement() {
     _entitlementStatus = EntitlementStatus.free;
-    try {
-      await _preferences.setBool(_entitlementCacheKey, false);
-    } catch (error) {
-      _errorMessage = 'לא ניתן היה לעדכן את סטטוס הפרימיום: $error';
-    }
   }
 
   void _configureApplicationUserName({String? uid, String? hashedUid}) {

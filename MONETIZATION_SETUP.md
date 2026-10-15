@@ -1,6 +1,6 @@
 # Matzav monetization setup
 
-Matzav uses one permanent Google Play product:
+Matzav uses one permanent non-consumable product:
 
 - Product ID: `matzav_premium`
 - Type: non-consumable one-time product
@@ -10,6 +10,11 @@ Matzav uses one permanent Google Play product:
 The app never removes existing friends if a free user already has more than
 seven. It only prevents additional friends until the count falls below the
 limit or Premium is restored.
+
+Premium is enabled only after a purchased/restored transaction is reported by
+the store. The app does not persist a local Premium flag; after reinstalling
+or changing devices, users must restore their purchase from the Premium
+screen.
 
 ## 1. Create the Google Play product
 
@@ -23,7 +28,21 @@ The app queries the Play Store for the real localized price. If the product is
 not active or the installed build did not come from Play, the upgrade screen
 shows that purchasing is not available yet.
 
-## 2. Create the AdMob app and banner
+## 2. Create the App Store product
+
+In App Store Connect, create an in-app purchase for the iOS app with the exact
+product ID `matzav_premium` and type **Non-Consumable**. Complete its required
+localization, pricing, and review information, then make it available for sale.
+The app's iOS bundle ID is `com.mikron30.matzav`. The Account Holder must also
+have an active Paid Apps Agreement. Test the product on a sandbox/TestFlight
+install using a sandbox Apple Account before submitting a new app build for
+review.
+
+The iOS app uses StoreKit through Flutter's `in_app_purchase` plugin. The
+Premium screen includes a **Restore Purchase** action for customers who
+already own the product.
+
+## 3. Create the AdMob app and banner
 
 In AdMob, create or link the Android app with package
 `com.mikron30.matzav`, then create a banner ad unit. The AdMob app ID contains
@@ -58,7 +77,7 @@ For a production bundle, use the validation script with the two real IDs:
   -BannerAdUnitId 'ca-app-pub-0000000000000000/0000000000'
 ```
 
-## 3. Play declarations
+## 4. Play declarations
 
 Before publishing a build that requests production ads:
 
@@ -70,11 +89,11 @@ Before publishing a build that requests production ads:
 
 ## Purchase-verification boundary
 
-The current app accepts purchases reported by Google Play and caches the
-entitlement on the device. That is suitable for an MVP/internal test, but a
-modified client could bypass it and refunds are not synchronized immediately.
-Before treating the friend limit as a secure production paywall, add a trusted
-backend that verifies the purchase token with the Google Play Developer API,
-writes a server-owned entitlement, acknowledges valid purchases, and processes
-real-time refund/revocation notifications. Firestore rules alone cannot count
-an arbitrary friends subcollection securely.
+The app currently checks that the store reports a purchased/restored
+transaction for the expected product and that verification data is present;
+it does not cryptographically validate that data on a trusted server. Before
+treating the friend limit as a secure production paywall, add a backend that
+validates Google Play purchase tokens and App Store signed transactions,
+maintains a server-owned entitlement, acknowledges valid purchases where
+required, and processes refunds/revocations. Firestore rules alone cannot
+count an arbitrary friends subcollection securely.
