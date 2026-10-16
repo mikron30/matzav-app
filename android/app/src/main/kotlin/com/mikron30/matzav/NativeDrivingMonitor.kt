@@ -201,20 +201,43 @@ object NativeDrivingMonitor {
     }
 
     @Synchronized
-    fun recordState(context: Context, owner: String, active: Boolean) {
+    fun recordState(
+        context: Context,
+        owner: String,
+        active: Boolean,
+        activeSinceWallMs: Long? = null,
+    ) {
         val state = prefs(context)
+        val now = System.currentTimeMillis()
 
-        // Duplicate ENTER/EXIT events can be delivered around process restarts
-        // or re-registration. Do not create a new revision or cloud write when
-        // the durable state already matches the event.
         if (state.getString(KEY_OWNER, null) == owner &&
             state.getBoolean(KEY_HAS_STATE, false) &&
             state.getBoolean(KEY_ACTIVE, false) == active) {
+            if (active) {
+                val existingSince = state.getLong(KEY_ACTIVE_SINCE_WALL_MS, 0L)
+                val since = if (existingSince > 0L) existingSince
+                    else (activeSinceWallMs ?: now).coerceAtMost(now)
+                if (existingSince <= 0L) {
+                    state.edit().putLong(KEY_ACTIVE_SINCE_WALL_MS, since).apply()
+                }
+                scheduleDrivingExpiry(context, owner, since)
+            } else {
+                cancelDrivingExpiry(context, owner)
+            }
             return
         }
 
         val editor = state.edit()
         if (active && !state.getBoolean(KEY_ACTIVE, false)) editor.remove("previous_activity")
+        if (active) {
+            editor.putLong(
+                KEY_ACTIVE_SINCE_WALL_MS,
+                (activeSinceWallMs ?: now).coerceAtMost(now),
+            )
+        } else {
+            editor.remove(KEY_ACTIVE_SINCE_WALL_MS)
+        }
+
         check(editor
             .putString(KEY_OWNER, owner)
             .putBoolean(KEY_ACTIVE, active)
@@ -222,17 +245,29 @@ object NativeDrivingMonitor {
             .putBoolean(KEY_PENDING, true)
             .putLong(KEY_REVISION, state.getLong(KEY_REVISION, 0L) + 1L)
             .commit()) { "Could not persist the driving transition" }
+
+        if (active) {
+            scheduleDrivingExpiry(
+                context,
+                owner,
+                state.getLong(KEY_ACTIVE_SINCE_WALL_MS, now),
+            )
+        } else {
+            cancelDrivingExpiry(context, owner)
+        }
     }
 
     fun recordTransitionMetadata(
         context: Context,
         type: String,
         ageMs: Long,
+        decision: String,
     ) {
         prefs(context).edit()
             .putString(KEY_LAST_TRANSITION, type)
             .putLong(KEY_LAST_TRANSITION_AGE_MS, ageMs)
             .putLong(KEY_LAST_TRANSITION_RECEIVED_AT, System.currentTimeMillis())
+            .putString(KEY_LAST_TRANSITION_DECISION, decision)
             .apply()
     }
 
