@@ -17,6 +17,13 @@ public final class DrivingStatusPolicyTest {
         check("neither detector requests Physical Activity",
                 !DrivingStatusPolicy.requiresPhysicalActivityPermission(false, false));
 
+        check("fresh vehicle ENTER is accepted",
+                DrivingStatusPolicy.shouldAcceptVehicleTransition(true, 30_000L, 1_800_000L));
+        check("replayed two-hour vehicle ENTER is rejected",
+                !DrivingStatusPolicy.shouldAcceptVehicleTransition(true, 7_200_000L, 1_800_000L));
+        check("late EXIT is always accepted",
+                DrivingStatusPolicy.shouldAcceptVehicleTransition(false, 7_200_000L, 1_800_000L));
+
         Map<String, Object> home = map("activity", "home", "availability", "canTalk");
         Map<String, Object> entered = apply(home, change(home, true));
         equal("enter publishes driving", "driving", entered.get("activity"));
