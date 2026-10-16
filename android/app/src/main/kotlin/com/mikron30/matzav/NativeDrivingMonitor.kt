@@ -310,6 +310,63 @@ object NativeDrivingMonitor {
     }
 
     private fun workName(owner: String) = "matzav-driving-status-$owner"
+    private fun expiryWorkName(owner: String) = "$EXPIRY_WORK_PREFIX$owner"
+
+    private fun expireOrScheduleActiveWatchdog(context: Context, owner: String) {
+        val state = prefs(context)
+        if (state.getString(KEY_OWNER, null) != owner ||
+            !state.getBoolean(KEY_ACTIVE, false)) {
+            cancelDrivingExpiry(context, owner)
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        val storedSince = state.getLong(KEY_ACTIVE_SINCE_WALL_MS, 0L)
+        val fallbackSince = state.getLong(KEY_LAST_TRANSITION_RECEIVED_AT, 0L)
+        val since = when {
+            storedSince > 0L -> storedSince
+            fallbackSince > 0L -> fallbackSince
+            else -> now
+        }
+
+        if (storedSince <= 0L) {
+            state.edit().putLong(KEY_ACTIVE_SINCE_WALL_MS, since).apply()
+        }
+
+        if (now - since >= MAX_ACTIVE_DURATION_MS) {
+            state.edit()
+                .putString(KEY_LAST_TRANSITION_DECISION, "expired_active_timeout")
+                .apply()
+            recordState(context, owner, false)
+            scheduleStatusSync(context)
+        } else {
+            scheduleDrivingExpiry(context, owner, since)
+        }
+    }
+
+    private fun scheduleDrivingExpiry(
+        context: Context,
+        owner: String,
+        activeSinceWallMs: Long,
+    ) {
+        val delayMs = (
+            activeSinceWallMs + MAX_ACTIVE_DURATION_MS - System.currentTimeMillis()
+        ).coerceAtLeast(0L)
+        val request = OneTimeWorkRequestBuilder<DrivingExpiryWorker>()
+            .setInputData(workDataOf(KEY_OWNER to owner))
+            .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
+            .build()
+        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+            expiryWorkName(owner),
+            ExistingWorkPolicy.REPLACE,
+            request,
+        )
+    }
+
+    private fun cancelDrivingExpiry(context: Context, owner: String) {
+        WorkManager.getInstance(context.applicationContext)
+            .cancelUniqueWork(expiryWorkName(owner))
+    }
 
     private fun rememberCurrentNonDriving(context: Context, owner: String) {
         FirebaseFirestore.getInstance().collection("profiles").document(owner).get()
