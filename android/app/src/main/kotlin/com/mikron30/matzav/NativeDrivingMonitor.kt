@@ -170,6 +170,7 @@ object NativeDrivingMonitor {
             removeUpdates(appContext)
             prefs(appContext).getString(KEY_OWNER, null)?.let {
                 WorkManager.getInstance(appContext).cancelUniqueWork(workName(it))
+                WorkManager.getInstance(appContext).cancelUniqueWork(expiryWorkName(it))
             }
             return
         }
@@ -177,7 +178,10 @@ object NativeDrivingMonitor {
         val state = prefs(appContext)
         val oldOwner = state.getString(KEY_OWNER, null)
         if (oldOwner != user.uid) {
-            if (oldOwner != null) WorkManager.getInstance(appContext).cancelUniqueWork(workName(oldOwner))
+            if (oldOwner != null) {
+                WorkManager.getInstance(appContext).cancelUniqueWork(workName(oldOwner))
+                WorkManager.getInstance(appContext).cancelUniqueWork(expiryWorkName(oldOwner))
+            }
             // Never carry another account's trip or restoration status forward.
             state.edit().clear().putString(KEY_OWNER, user.uid).apply()
         }
