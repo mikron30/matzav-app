@@ -462,19 +462,37 @@ class DrivingTransitionReceiver : BroadcastReceiver() {
             (android.os.SystemClock.elapsedRealtimeNanos() - event.elapsedRealTimeNanos)
                 .coerceAtLeast(0L) / 1_000_000L
         )
+        val accepted = DrivingStatusPolicy.shouldAcceptVehicleTransition(
+            active,
+            eventAgeMs,
+            NativeDrivingMonitor.MAX_ACCEPTED_ENTER_AGE_MS,
+        )
         val appContext = context.applicationContext
         NativeDrivingMonitor.recordTransitionMetadata(
             appContext,
             if (active) "enter" else "exit",
             eventAgeMs,
+            if (accepted) "accepted" else "ignored_stale_enter",
         )
+        if (!accepted) {
+            Log.i(
+                "MatzavDriving",
+                "Ignoring stale IN_VEHICLE ENTER ageMs=$eventAgeMs",
+            )
+            return
+        }
         if (!NativeDrivingMonitor.enabled(appContext) || !NativeDrivingMonitor.hasPermission(appContext)) return
         val pending = goAsync()
         executor.execute {
             try {
                 val owner = FirebaseAuth.getInstance().currentUser?.uid
                 if (owner != null) {
-                    NativeDrivingMonitor.recordState(appContext, owner, active)
+                    NativeDrivingMonitor.recordState(
+                        appContext,
+                        owner,
+                        active,
+                        if (active) System.currentTimeMillis() - eventAgeMs else null,
+                    )
                     // Keep only durable enqueueing in the broadcast's short
                     // lifetime. Network I/O belongs to WorkManager, not goAsync.
                     NativeDrivingMonitor.scheduleStatusSync(appContext)?.result?.get(5, TimeUnit.SECONDS)
