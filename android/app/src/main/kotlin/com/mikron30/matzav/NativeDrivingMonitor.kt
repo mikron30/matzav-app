@@ -91,10 +91,15 @@ object NativeDrivingMonitor {
     const val KEY_LAST_TRANSITION = "last_transition"
     const val KEY_LAST_TRANSITION_AGE_MS = "last_transition_age_ms"
     const val KEY_LAST_TRANSITION_RECEIVED_AT = "last_transition_received_at"
+    const val KEY_LAST_TRANSITION_DECISION = "last_transition_decision"
+    const val KEY_ACTIVE_SINCE_WALL_MS = "active_since_wall_ms"
     const val ACTION_TRANSITION = "com.mikron30.matzav.DRIVING_TRANSITION"
+    const val MAX_ACCEPTED_ENTER_AGE_MS = 30L * 60L * 1000L
+    const val MAX_ACTIVE_DURATION_MS = 8L * 60L * 60L * 1000L
     private const val DRIVING_PREFS = "matzav_native_driving_v43"
     private const val REQUEST_CODE = 44220
     private const val LEGACY_REQUEST_CODE = 43220
+    private const val EXPIRY_WORK_PREFIX = "matzav-driving-expiry-"
     private var registered = false
     private var registering = false
 
@@ -180,6 +185,7 @@ object NativeDrivingMonitor {
             stop(appContext)
             return
         }
+        expireOrScheduleActiveWatchdog(appContext, user.uid)
         if (!registered && !registering) registerUpdates(appContext)
         if (state.getBoolean(KEY_PENDING, false)) scheduleStatusSync(appContext)
         rememberCurrentNonDriving(appContext, user.uid)
