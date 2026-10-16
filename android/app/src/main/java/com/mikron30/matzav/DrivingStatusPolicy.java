@@ -12,6 +12,17 @@ public final class DrivingStatusPolicy {
         return driving || sleep;
     }
 
+    /**
+     * EXIT is always useful, even when Android delivers it late. A very old
+     * ENTER is not: Play services can replay a historical IN_VEHICLE event
+     * after process/re-registration, which would otherwise put a stationary
+     * user back into driving hours later.
+     */
+    public static boolean shouldAcceptVehicleTransition(
+            boolean entering, long ageMs, long maxEnterAgeMs) {
+        return !entering || ageMs <= maxEnterAgeMs;
+    }
+
     public static boolean isCurrentSnapshot(String owner, String signedInUser,
             String stateOwner, long revision, long currentRevision) {
         return owner != null && !owner.isEmpty() && owner.equals(signedInUser)
