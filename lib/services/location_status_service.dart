@@ -394,9 +394,9 @@ class LocationStatusService {
         // the next connection, while Android also gets a fresh native retry.
         unawaited(() async {
           try {
-            await UserRepository.instance.updateStatus(
+            await UserRepository.instance.startAutomaticDriving(
               uid: uid,
-              activity: ActivityStatus.driving,
+              fallback: _lastNonDriving,
             );
             _debug(
               'native_driving_recovery_publish_done',
@@ -487,9 +487,9 @@ class LocationStatusService {
           ..._positionData(position),
           'fastSamples': _fastSamples,
         });
-        await UserRepository.instance.updateStatus(
+        await UserRepository.instance.startAutomaticDriving(
           uid: uid,
-          activity: ActivityStatus.driving,
+          fallback: _lastNonDriving,
         );
         return;
       }
@@ -516,7 +516,7 @@ class LocationStatusService {
           'locationActivity': locationActivity?.name,
           'nextActivity': nextActivity.name,
         });
-        await UserRepository.instance.updateStatus(
+        await UserRepository.instance.finishAutomaticDriving(
           uid: uid,
           activity: nextActivity,
         );
