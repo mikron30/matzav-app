@@ -201,6 +201,49 @@ class UserRepository {
         .set(data, SetOptions(merge: true));
   }
 
+  /// Publishes a driving status that belongs to the automatic detector.
+  ///
+  /// Flutter GPS and the Android native detector share the same ownership
+  /// fields. This lets a later native EXIT safely restore the pre-trip status
+  /// instead of mistaking the automatic driving value for a manual user choice.
+  Future<void> startAutomaticDriving({
+    required String uid,
+    required ActivityStatus fallback,
+  }) async {
+    final ref = _db.collection('profiles').doc(uid);
+
+    await _db.runTransaction((transaction) async {
+      final snapshot = await transaction.get(ref);
+      final data = snapshot.data() ?? const <String, dynamic>{};
+      final current = data['activity'] as String?;
+      final alreadyOwned = data['nativeDrivingDetected'] == true;
+      final saved = data['nativeDrivingPreviousActivity'] as String?;
+
+      bool stable(String? value) {
+        return value != null &&
+            value.isNotEmpty &&
+            value != ActivityStatus.driving.name &&
+            value != ActivityStatus.onCall.name &&
+            value != ActivityStatus.sleeping.name;
+      }
+
+      final previous = alreadyOwned && stable(saved)
+          ? saved!
+          : (stable(current) ? current! : fallback.name);
+
+      transaction.set(
+        ref,
+        {
+          'activity': ActivityStatus.driving.name,
+          'nativeDrivingDetected': true,
+          'nativeDrivingPreviousActivity': previous,
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+    });
+  }
+
   /// Ends an automatically detected driving session and clears the native
   /// ownership markers in the same Firestore write. This is intentionally
   /// separate from [updateStatus]: a late Flutter/native driving write must not
