@@ -64,11 +64,17 @@ class NativeStatusSyncWorker(
                     OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST,
                 )
             }
-            WorkManager.getInstance(appContext).enqueueUniqueWork(
-                WORK_PREFIX + user.uid,
-                ExistingWorkPolicy.REPLACE,
-                request.build(),
-            )
+            try {
+                WorkManager.getInstance(appContext).enqueueUniqueWork(
+                    WORK_PREFIX + user.uid,
+                    ExistingWorkPolicy.REPLACE,
+                    request.build(),
+                )
+            } catch (_: IllegalStateException) {
+                // Can happen during ContentProvider startup before WorkManager's
+                // own initializer has run. The provider posts another sync after
+                // startup, so failing closed here avoids a launch crash.
+            }
         }
     }
 
