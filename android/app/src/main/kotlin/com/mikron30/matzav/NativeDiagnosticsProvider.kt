@@ -107,6 +107,10 @@ class NativeDiagnosticsProvider : ContentProvider(),
                 put("screenOffAt", auto.getLong("screen_off_at", 0L))
                 put("sleepApiLastEventMs", auto.getLong("sleep_api_last_event_ms", 0L))
                 put("sleepApiConfidence", auto.getInt("sleep_api_confidence", -1))
+                put("overrideSyncResult", auto.getString("override_sync_result", null) ?: "none")
+                put("overrideSyncDesired", auto.getString("override_sync_desired", null) ?: "none")
+                put("overrideSyncAt", auto.getLong("override_sync_at", 0L))
+                put("overrideSyncError", auto.getString("override_sync_error", null) ?: "none")
             })
         }
 
