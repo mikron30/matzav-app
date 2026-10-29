@@ -54,6 +54,7 @@ class NativeStatusSyncProvider : ContentProvider(),
     private var nativePrefs: SharedPreferences? = null
     private var screenReceiver: BroadcastReceiver? = null
     private var authListener: FirebaseAuth.AuthStateListener? = null
+    private var startupReady = false
     private var syncGeneration = 0L
 
     override fun onCreate(): Boolean {
@@ -67,15 +68,17 @@ class NativeStatusSyncProvider : ContentProvider(),
 
         registerScreenReceiver(appContext)
         NativeSleepScheduler.reconcile(appContext)
-        syncStatus(appContext)
 
-        // FirebaseAuth may restore the signed-in user after providers/receivers
-        // have already started. Reconcile again as soon as credentials are
-        // available so a cold-started PHONE_STATE/Sleep event is never lost.
+        // WorkManager's initializer is another ContentProvider and may run
+        // after this provider. Never touch WorkManager synchronously from our
+        // onCreate path. Defer the first reconciliation until provider startup
+        // has completed, then keep retrying when FirebaseAuth restores a user.
         Handler(Looper.getMainLooper()).post {
+            startupReady = true
             authListener = FirebaseAuth.AuthStateListener {
                 syncStatus(appContext)
             }.also { FirebaseAuth.getInstance().addAuthStateListener(it) }
+            syncStatus(appContext)
         }
         return true
     }
@@ -122,11 +125,14 @@ class NativeStatusSyncProvider : ContentProvider(),
         }
 
         if (
-            key == KEY_ENABLED ||
-            key == KEY_CALL_ENABLED ||
-            key == KEY_SLEEP_ENABLED ||
-            key == KEY_CALL_ACTIVE ||
-            key == KEY_SLEEP_ACTIVE
+            startupReady &&
+            (
+                key == KEY_ENABLED ||
+                key == KEY_CALL_ENABLED ||
+                key == KEY_SLEEP_ENABLED ||
+                key == KEY_CALL_ACTIVE ||
+                key == KEY_SLEEP_ACTIVE
+            )
         ) {
             syncStatus(appContext)
         }
