@@ -227,13 +227,24 @@ class AutomaticStatusService {
         automaticActivity,
       );
     } else {
-      final previous = await _resolveReturnActivity(uid, prefs);
-      await UserRepository.instance.updateStatus(
-        uid: uid,
-        activity: previous,
-      );
-      await BusyAvailabilityService.instance.syncForActivity(uid, previous);
-      await prefs.remove(_previousActivityKey);
+      final savedPrevious = prefs.getString(_previousActivityKey);
+
+      if (savedPrevious == null || savedPrevious.isEmpty) {
+        // A persisted lastOverride without a matching previousActivity is an
+        // incomplete/stale local marker (for example after process death).
+        // Never let it manufacture a new "driving" value from an old native
+        // IN_VEHICLE bit. Native WorkManager + location automation will
+        // independently reconcile the real current state.
+        await prefs.remove(_previousActivityKey);
+      } else {
+        final previous = await _resolveReturnActivity(uid, prefs);
+        await UserRepository.instance.updateStatus(
+          uid: uid,
+          activity: previous,
+        );
+        await BusyAvailabilityService.instance.syncForActivity(uid, previous);
+        await prefs.remove(_previousActivityKey);
+      }
     }
 
     _currentOverride = normalized;
