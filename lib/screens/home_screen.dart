@@ -54,7 +54,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _restoreAutomationPreference();
+    _restoreAutomationPreference(startAutomation: false);
     UserRepository.instance.syncFriendRelationships(uid);
     _callWaitMessageSubscription = CallWaitService.instance.foregroundMessages
         .listen((message) {
@@ -78,13 +78,15 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  Future<void> _restoreAutomationPreference() async {
+  Future<void> _restoreAutomationPreference({
+    bool startAutomation = true,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
     final enabled = prefs.getBool('matzav_automation_enabled_v25') ?? true;
 
     if (!mounted) return;
     setState(() => _automationOn = enabled);
-    if (!enabled) return;
+    if (!enabled || !startAutomation) return;
 
     final profile = await FirebaseFirestore.instance
         .collection('profiles')
