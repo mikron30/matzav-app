@@ -53,6 +53,7 @@ class NativeStatusSyncProvider : ContentProvider(),
 
     private var nativePrefs: SharedPreferences? = null
     private var screenReceiver: BroadcastReceiver? = null
+    private var authListener: FirebaseAuth.AuthStateListener? = null
     private var syncGeneration = 0L
 
     override fun onCreate(): Boolean {
@@ -67,6 +68,15 @@ class NativeStatusSyncProvider : ContentProvider(),
         registerScreenReceiver(appContext)
         NativeSleepScheduler.reconcile(appContext)
         syncStatus(appContext)
+
+        // FirebaseAuth may restore the signed-in user after providers/receivers
+        // have already started. Reconcile again as soon as credentials are
+        // available so a cold-started PHONE_STATE/Sleep event is never lost.
+        Handler(Looper.getMainLooper()).post {
+            authListener = FirebaseAuth.AuthStateListener {
+                syncStatus(appContext)
+            }.also { FirebaseAuth.getInstance().addAuthStateListener(it) }
+        }
         return true
     }
 
@@ -187,6 +197,10 @@ class NativeStatusSyncProvider : ContentProvider(),
             NATIVE_PREFS,
             Context.MODE_PRIVATE,
         )
+
+        // Always enqueue a durable latest-state reconciliation. The existing
+        // callback path below remains as a fast path while the process is alive.
+        NativeStatusSyncWorker.schedule(appContext)
 
         val generation = ++syncGeneration
         val desired = desiredOverride(prefs)
