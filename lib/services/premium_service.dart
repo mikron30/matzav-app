@@ -40,6 +40,8 @@ class PremiumService extends ChangeNotifier {
   bool _isDisposed = false;
   bool _automaticRestoreAttempted = false;
   bool _awaitingRestoreResult = false;
+  bool _explicitPurchaseRequested = false;
+  bool _explicitRestoreRequested = false;
   String? _errorMessage;
   String? _applicationUserName;
   Future<void>? _initialization;
@@ -157,6 +159,7 @@ class PremiumService extends ChangeNotifier {
 
     _errorMessage = null;
     _isPurchasePending = true;
+    _explicitPurchaseRequested = true;
     _notifyListeners();
 
     try {
@@ -168,12 +171,14 @@ class PremiumService extends ChangeNotifier {
       );
       if (!accepted) {
         _isPurchasePending = false;
+        _explicitPurchaseRequested = false;
         _errorMessage = 'החנות לא הצליחה להתחיל את הרכישה.';
         _notifyListeners();
       }
       return accepted;
     } catch (error) {
       _isPurchasePending = false;
+      _explicitPurchaseRequested = false;
       _errorMessage = 'לא ניתן להתחיל את הרכישה: $error';
       _notifyListeners();
       return false;
@@ -187,6 +192,8 @@ class PremiumService extends ChangeNotifier {
 
     _isRestoring = true;
     _awaitingRestoreResult = true;
+    _explicitRestoreRequested =
+        defaultTargetPlatform == TargetPlatform.iOS ? true : _explicitRestoreRequested;
     _errorMessage = null;
     _notifyListeners();
     try {
@@ -212,34 +219,52 @@ class PremiumService extends ChangeNotifier {
     final premiumPurchases = purchases
         .where((purchase) => purchase.productID == productId)
         .toList(growable: false);
+
     if (premiumPurchases.isEmpty) {
       if (_awaitingRestoreResult) {
         _awaitingRestoreResult = false;
+        _explicitRestoreRequested = false;
         _setFreeEntitlement();
         _notifyListeners();
       }
       return;
     }
-    _awaitingRestoreResult = false;
 
     var hasPendingPurchase = false;
+
     for (final purchase in premiumPurchases) {
       switch (purchase.status) {
         case PurchaseStatus.pending:
-          // Pending is never an entitlement. Wait for a later purchased or
-          // restored event before granting premium.
-          hasPendingPurchase = true;
+          // A pending StoreKit transaction is never an entitlement by itself.
+          // It also must not manufacture a user-initiated purchase flow.
+          if (_explicitPurchaseRequested) {
+            hasPendingPurchase = true;
+          }
+
         case PurchaseStatus.purchased:
-        case PurchaseStatus.restored:
+          final allowPurchasedEntitlement =
+              defaultTargetPlatform != TargetPlatform.iOS ||
+              _explicitPurchaseRequested;
+
+          if (!allowPurchasedEntitlement) {
+            // StoreKit can replay an unfinished sandbox transaction when the
+            // observer attaches at app launch. Completing that transaction is
+            // fine, but silently granting premium would make App Review see
+            // Premium activate without any purchase UI.
+            if (purchase.pendingCompletePurchase) {
+              try {
+                await _inAppPurchase.completePurchase(purchase);
+              } catch (_) {}
+            }
+            continue;
+          }
+
           final verified = _verifyPurchaseForMvp(purchase);
           if (!verified) {
             _errorMessage = 'לא ניתן לאמת את רכישת הפרימיום.';
             continue;
           }
 
-          // The premium entitlement is only unlocked after the platform
-          // transaction is acknowledged and closed. Granting earlier can enable
-          // premium features before the purchase flow is actually complete.
           if (purchase.pendingCompletePurchase) {
             try {
               await _inAppPurchase.completePurchase(purchase);
@@ -252,11 +277,55 @@ class PremiumService extends ChangeNotifier {
 
           _errorMessage = null;
           _grantPremium();
+          _explicitPurchaseRequested = false;
+          _awaitingRestoreResult = false;
+
+        case PurchaseStatus.restored:
+          final allowRestoreEntitlement =
+              defaultTargetPlatform != TargetPlatform.iOS ||
+              _explicitRestoreRequested;
+
+          if (!allowRestoreEntitlement) {
+            if (purchase.pendingCompletePurchase) {
+              try {
+                await _inAppPurchase.completePurchase(purchase);
+              } catch (_) {}
+            }
+            continue;
+          }
+
+          final verified = _verifyPurchaseForMvp(purchase);
+          if (!verified) {
+            _errorMessage = 'לא ניתן לאמת את רכישת הפרימיום.';
+            continue;
+          }
+
+          if (purchase.pendingCompletePurchase) {
+            try {
+              await _inAppPurchase.completePurchase(purchase);
+            } catch (error) {
+              _errorMessage =
+                  'הרכישה שוחזרה אך לא ניתן היה להשלים אותה: $error';
+              continue;
+            }
+          }
+
+          _errorMessage = null;
+          _grantPremium();
+          _explicitRestoreRequested = false;
+          _awaitingRestoreResult = false;
+
         case PurchaseStatus.error:
+          _explicitPurchaseRequested = false;
+          if (_explicitRestoreRequested) {
+            _explicitRestoreRequested = false;
+            _awaitingRestoreResult = false;
+          }
           _errorMessage =
               purchase.error?.message ?? 'אירעה שגיאה במהלך הרכישה.';
+
         case PurchaseStatus.canceled:
-          // Cancellation is not an error and, critically, is not premium.
+          _explicitPurchaseRequested = false;
           _errorMessage = null;
       }
     }
