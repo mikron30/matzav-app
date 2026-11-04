@@ -202,6 +202,7 @@ class PremiumService extends ChangeNotifier {
       );
     } catch (error) {
       _awaitingRestoreResult = false;
+      _explicitRestoreRequested = false;
       _errorMessage = 'לא ניתן לשחזר רכישות: $error';
     } finally {
       _isRestoring = false;
@@ -240,6 +241,7 @@ class PremiumService extends ChangeNotifier {
           if (_explicitPurchaseRequested) {
             hasPendingPurchase = true;
           }
+          continue;
 
         case PurchaseStatus.purchased:
           final allowPurchasedEntitlement =
@@ -279,6 +281,7 @@ class PremiumService extends ChangeNotifier {
           _grantPremium();
           _explicitPurchaseRequested = false;
           _awaitingRestoreResult = false;
+          continue;
 
         case PurchaseStatus.restored:
           final allowRestoreEntitlement =
@@ -314,6 +317,7 @@ class PremiumService extends ChangeNotifier {
           _grantPremium();
           _explicitRestoreRequested = false;
           _awaitingRestoreResult = false;
+          continue;
 
         case PurchaseStatus.error:
           _explicitPurchaseRequested = false;
@@ -323,10 +327,12 @@ class PremiumService extends ChangeNotifier {
           }
           _errorMessage =
               purchase.error?.message ?? 'אירעה שגיאה במהלך הרכישה.';
+          continue;
 
         case PurchaseStatus.canceled:
           _explicitPurchaseRequested = false;
           _errorMessage = null;
+          continue;
       }
     }
 
@@ -367,6 +373,9 @@ class PremiumService extends ChangeNotifier {
 
   void _handlePurchaseStreamError(Object error, StackTrace stackTrace) {
     _isPurchasePending = false;
+    _explicitPurchaseRequested = false;
+    _explicitRestoreRequested = false;
+    _awaitingRestoreResult = false;
     _errorMessage = 'לא ניתן לקבל עדכון רכישה מהחנות: $error';
     _notifyListeners();
   }
