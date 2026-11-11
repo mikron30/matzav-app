@@ -201,6 +201,42 @@ class UserRepository {
         .set(data, SetOptions(merge: true));
   }
 
+  /// Clears a call/sleep override that is still explicitly owned by the
+  /// native detector. The expected override check prevents a stale Flutter
+  /// recovery from overwriting a newer native state.
+  Future<bool> clearNativeAutomaticOverride({
+    required String uid,
+    required String expectedOverride,
+    required ActivityStatus restoreActivity,
+  }) async {
+    final ref = _db.collection('profiles').doc(uid);
+
+    return _db.runTransaction<bool>((transaction) async {
+      final snapshot = await transaction.get(ref);
+      final data = snapshot.data() ?? const <String, dynamic>{};
+      final nativeOverride = data['automaticNativeOverride'] as String?;
+
+      if (nativeOverride != expectedOverride) return false;
+
+      final current = data['activity'] as String?;
+      final updates = <String, dynamic>{
+        'automaticNativeOverride': FieldValue.delete(),
+        'automaticPreviousActivity': FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      // Only restore activity while the visible status is still the same
+      // native-owned temporary override. If the user already changed status
+      // manually, keep that newer choice and only remove stale ownership.
+      if (current == expectedOverride) {
+        updates['activity'] = restoreActivity.name;
+      }
+
+      transaction.set(ref, updates, SetOptions(merge: true));
+      return current == expectedOverride;
+    });
+  }
+
   /// Publishes a driving status that belongs to the automatic detector.
   ///
   /// Flutter GPS and the Android native detector share the same ownership
