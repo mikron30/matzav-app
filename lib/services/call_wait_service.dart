@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 typedef _ProfileSubscription =
     StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>;
@@ -9,6 +11,10 @@ typedef _ProfileSubscription =
 class CallWaitService {
   CallWaitService._();
   static final instance = CallWaitService._();
+
+  static const MethodChannel _localNotificationChannel = MethodChannel(
+    'com.mikron30.matzav/local_notification',
+  );
 
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   final StreamController<String> _foregroundMessages =
@@ -221,6 +227,23 @@ class CallWaitService {
       return;
     }
     _lastStatusNotice[dedupeKey] = now;
+
+    // Android does not display FCM notification payloads while the app is in
+    // the foreground. The old implementation only emitted a SnackBar, which
+    // can be hidden behind the "wait for call end" dialog. Show a real system
+    // notification as well so the alert is visible in every foreground state.
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      unawaited(
+        _localNotificationChannel.invokeMethod<void>(
+          'showStatusNotification',
+          <String, String>{
+            'title': 'Matzav',
+            'body': message,
+          },
+        ).catchError((_) {}),
+      );
+    }
+
     _foregroundMessages.add(message);
   }
 
