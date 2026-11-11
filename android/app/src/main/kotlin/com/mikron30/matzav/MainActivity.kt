@@ -2,6 +2,10 @@ package com.mikron30.matzav
 
 import android.Manifest
 import android.app.Activity
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.IntentSender
@@ -23,6 +27,9 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val PHONE_HINT_CHANNEL = "com.mikron30.matzav/phone_hint"
         private const val DIRECT_CALL_CHANNEL = "com.mikron30.matzav/direct_call"
+        private const val LOCAL_NOTIFICATION_CHANNEL =
+            "com.mikron30.matzav/local_notification"
+        private const val STATUS_NOTIFICATION_CHANNEL_ID = "matzav_status_alerts"
         private const val AUTOMATIC_STATUS_CHANNEL =
             "com.mikron30.matzav/automatic_status"
         private const val PHONE_HINT_REQUEST_CODE = 43127
@@ -67,6 +74,34 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            LOCAL_NOTIFICATION_CHANNEL,
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "showStatusNotification" -> {
+                    val title =
+                        call.argument<String>("title")?.trim().orEmpty()
+                    val body =
+                        call.argument<String>("body")?.trim().orEmpty()
+                    if (body.isEmpty()) {
+                        result.error(
+                            "EMPTY_NOTIFICATION",
+                            "Notification body is empty.",
+                            null,
+                        )
+                    } else {
+                        showStatusNotification(
+                            if (title.isEmpty()) "Matzav" else title,
+                            body,
+                        )
+                        result.success(null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
 
         automaticStatusChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -137,6 +172,62 @@ class MainActivity : FlutterActivity() {
         super.onResume()
         // Also recover when Physical Activity was granted in Android Settings.
         NativeDrivingMonitor.reconcile(applicationContext)
+    }
+
+    private fun showStatusNotification(title: String, body: String) {
+        val manager =
+            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    STATUS_NOTIFICATION_CHANNEL_ID,
+                    "Matzav status alerts",
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description =
+                        "Notifications when a friend finishes a call or starts driving"
+                    enableVibration(true)
+                },
+            )
+        }
+
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val contentIntent = launchIntent?.let {
+            PendingIntent.getActivity(
+                this,
+                0,
+                it,
+                PendingIntent.FLAG_UPDATE_CURRENT or
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        PendingIntent.FLAG_IMMUTABLE
+                    } else {
+                        0
+                    },
+            )
+        }
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, STATUS_NOTIFICATION_CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+                .setPriority(Notification.PRIORITY_HIGH)
+                .setDefaults(Notification.DEFAULT_ALL)
+        }
+
+        builder
+            .setSmallIcon(applicationInfo.icon)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(body))
+            .setAutoCancel(true)
+            .setContentIntent(contentIntent)
+
+        manager.notify(
+            (System.currentTimeMillis() and 0x7FFFFFFF).toInt(),
+            builder.build(),
+        )
     }
 
     private fun missingAutomaticPermissions(
