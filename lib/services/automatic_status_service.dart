@@ -300,14 +300,60 @@ class AutomaticStatusService {
     String uid,
     SharedPreferences prefs,
   ) async {
-    // This local marker is written only when Matzav itself entered an automatic
-    // temporary override. Its presence lets us repair a stale cloud onCall/
-    // sleeping state without changing a status the user selected manually.
+    final snapshot = await UserRepository.instance.profileStream(uid).first;
+    final data = snapshot.data() ?? const <String, dynamic>{};
+    final current = activityFromString(data['activity'] as String?);
+
+    // Native Android/iOS owns these markers. If the platform now reports
+    // "none" but Firestore still carries onCall/sleeping ownership, recover
+    // directly from the native previous-activity marker. This covers process
+    // death or a missed WorkManager completion where Flutter never created its
+    // own previousActivity preference.
+    final nativeOverride = data['automaticNativeOverride'] as String?;
+    if (nativeOverride == ActivityStatus.onCall.name ||
+        nativeOverride == ActivityStatus.sleeping.name) {
+      final savedNativePrevious =
+          data['automaticPreviousActivity'] as String?;
+      var previous = activityFromString(savedNativePrevious);
+
+      if (previous == ActivityStatus.onCall ||
+          previous == ActivityStatus.sleeping) {
+        previous = ActivityStatus.home;
+      }
+
+      previous = await StatusTimerService.instance.resolveActivityReturn(
+        uid,
+        previous,
+      );
+
+      final restored =
+          await UserRepository.instance.clearNativeAutomaticOverride(
+        uid: uid,
+        expectedOverride: nativeOverride!,
+        restoreActivity: previous,
+      );
+
+      if (restored) {
+        await BusyAvailabilityService.instance.syncForActivity(uid, previous);
+      }
+
+      await prefs.remove(_previousActivityKey);
+      await prefs.setString(_lastOverrideKey, 'none');
+      _currentOverride = 'none';
+
+      try {
+        await _channel.invokeMethod<void>('syncDrivingStatus');
+      } on MissingPluginException {
+        // Feature is unavailable on this platform.
+      } on PlatformException {
+        // Persisted native transitions still have their WorkManager retry.
+      }
+      return;
+    }
+
+    // Flutter-owned recovery path for older/in-process temporary overrides.
     final previousName = prefs.getString(_previousActivityKey);
     if (previousName == null || previousName.isEmpty) return;
-
-    final snapshot = await UserRepository.instance.profileStream(uid).first;
-    final current = activityFromString(snapshot.data()?['activity'] as String?);
 
     if (current != ActivityStatus.onCall &&
         current != ActivityStatus.sleeping) {
@@ -332,5 +378,6 @@ class AutomaticStatusService {
     } on PlatformException {
       // Persisted native transitions still have their WorkManager retry.
     }
+
   }
 }
