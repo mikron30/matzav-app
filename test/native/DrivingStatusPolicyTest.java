@@ -87,6 +87,23 @@ public final class DrivingStatusPolicyTest {
         check("old local account state is rejected",
                 !DrivingStatusPolicy.isCurrentSnapshot("A", "A", "B", 2, 2));
 
+        check("fresh stationary GPS blocks a new native ENTER",
+                DrivingStatusPolicy.gpsContradictsFreshEnter(
+                        false, true, 30_000L, 8f, true, 0.2f,
+                        600_000L, 100f, 2.0f));
+        check("moving GPS allows a new native ENTER",
+                !DrivingStatusPolicy.gpsContradictsFreshEnter(
+                        false, true, 30_000L, 8f, true, 8f,
+                        600_000L, 100f, 2.0f));
+        check("stale GPS cannot block background native driving",
+                !DrivingStatusPolicy.gpsContradictsFreshEnter(
+                        false, true, 700_000L, 8f, true, 0.2f,
+                        600_000L, 100f, 2.0f));
+        check("existing published trip is not affected by GPS ENTER guard",
+                !DrivingStatusPolicy.gpsContradictsFreshEnter(
+                        true, true, 30_000L, 8f, true, 0.0f,
+                        600_000L, 100f, 2.0f));
+
         Map<String, Object> legacy = map("activity", "driving", "nativeDrivingDetected", true);
         equal("v43 migration can restore its fallback", "work",
                 DrivingStatusPolicy.updates(legacy, false, false, "work", NOW).get("activity"));
