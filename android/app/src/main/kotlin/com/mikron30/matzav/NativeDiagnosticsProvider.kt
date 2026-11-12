@@ -96,6 +96,16 @@ class NativeDiagnosticsProvider : ContentProvider(),
                 put("lastTransitionReceivedAt", drive.getLong("last_transition_received_at", 0L))
                 put("lastTransitionDecision", drive.getString("last_transition_decision", null) ?: "none")
                 put("activeSinceWallMs", drive.getLong("active_since_wall_ms", 0L))
+                put("gpsGuardAt", drive.getLong("last_gps_guard_at", 0L))
+                put("gpsGuardAvailable", drive.getBoolean("last_gps_guard_available", false))
+                put("gpsGuardAgeMs", drive.getLong("last_gps_guard_age_ms", -1L))
+                put("gpsGuardAccuracyM",
+                    if (drive.contains("last_gps_guard_accuracy_m"))
+                        drive.getFloat("last_gps_guard_accuracy_m", -1f) else -1f)
+                put("gpsGuardHasSpeed", drive.getBoolean("last_gps_guard_has_speed", false))
+                put("gpsGuardSpeedKmh",
+                    if (drive.contains("last_gps_guard_speed_mps"))
+                        drive.getFloat("last_gps_guard_speed_mps", -1f) * 3.6f else -1f)
             })
 
             put("automatic", JSONObject().apply {
