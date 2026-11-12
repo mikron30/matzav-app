@@ -69,10 +69,17 @@ class DrivingStatusWorker(context: Context, parameters: WorkerParameters) : Work
 
             if (outcome.kind == "missing") return Result.retry()
 
+            if (outcome.kind == "deferred") {
+                // Call/sleep completion normally schedules an immediate fresh
+                // driving sync. Keep WorkManager's own retry as a second safety
+                // net so a missed/failed override restoration cannot strand an
+                // EXIT indefinitely.
+                return Result.retry()
+            }
+
             if (outcome.kind == "applied") {
                 NativeDrivingMonitor.completeSync(applicationContext, owner, revision, outcome.returnActivity)
             }
-            // Call/sleep completion schedules another sync after its own write.
             return Result.success()
         } catch (error: Exception) {
             if (error is InterruptedException) Thread.currentThread().interrupt()
