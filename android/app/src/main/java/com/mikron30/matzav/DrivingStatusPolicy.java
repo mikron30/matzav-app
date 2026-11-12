@@ -30,8 +30,15 @@ public final class DrivingStatusPolicy {
     }
 
     public static boolean isDeferred(Map<String, Object> profile, boolean overrideActive) {
-        String override = string(profile.get("automaticNativeOverride"), "none");
-        return overrideActive || "onCall".equals(override) || "sleeping".equals(override);
+        // The live native call/sleep state is authoritative. A cloud
+        // automaticNativeOverride marker can itself be stale if the process or
+        // network died while restoring the call/sleep status. Treating that
+        // stale cloud marker as a reason to defer driving creates a deadlock:
+        // the EXIT worker succeeds without clearing driving and may never run
+        // again. When native says the temporary override ended, driving is
+        // allowed to converge immediately; the call/sleep reconciler cleans
+        // its own cloud marker independently.
+        return overrideActive;
     }
 
     /** Null values mean delete a field. Timer values are epoch milliseconds. */
