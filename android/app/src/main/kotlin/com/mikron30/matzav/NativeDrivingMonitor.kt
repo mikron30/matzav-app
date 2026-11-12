@@ -94,7 +94,7 @@ object NativeDrivingMonitor {
     const val KEY_LAST_TRANSITION_DECISION = "last_transition_decision"
     const val KEY_ACTIVE_SINCE_WALL_MS = "active_since_wall_ms"
     const val ACTION_TRANSITION = "com.mikron30.matzav.DRIVING_TRANSITION"
-    const val MAX_ACCEPTED_ENTER_AGE_MS = 30L * 60L * 1000L
+    const val MAX_ACCEPTED_ENTER_AGE_MS = 10L * 60L * 1000L
     const val MAX_ACTIVE_DURATION_MS = 8L * 60L * 60L * 1000L
     private const val DRIVING_PREFS = "matzav_native_driving_v43"
     private const val REQUEST_CODE = 44220
