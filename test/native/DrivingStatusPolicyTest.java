@@ -46,7 +46,10 @@ public final class DrivingStatusPolicyTest {
         Map<String, Object> duringCall = new HashMap<>(entered);
         duringCall.put("activity", "onCall");
         duringCall.put("automaticNativeOverride", "onCall");
-        check("wait for the call restoration write", change(duringCall, true).isEmpty());
+        check("live native call still defers driving",
+                DrivingStatusPolicy.updates(duringCall, true, true, "home", NOW).isEmpty());
+        equal("stale cloud call marker cannot block a live trip", "driving",
+                DrivingStatusPolicy.updates(duringCall, true, false, "home", NOW).get("activity"));
         duringCall.remove("automaticNativeOverride");
         duringCall.put("activity", "driving");
         equal("trip that ended during a call restores afterward", "home",
