@@ -23,6 +23,32 @@ public final class DrivingStatusPolicy {
         return !entering || ageMs <= maxEnterAgeMs;
     }
 
+    /**
+     * A fresh, accurate, stationary GPS fix is stronger evidence than a brand
+     * new IN_VEHICLE classification. Only gate a new native-owned trip; once a
+     * trip is already published, traffic lights must not clear it.
+     */
+    public static boolean gpsContradictsFreshEnter(
+            boolean alreadyDrivingOrOwned,
+            boolean hasLocation,
+            long locationAgeMs,
+            float accuracyM,
+            boolean hasSpeed,
+            float speedMps,
+            long maxLocationAgeMs,
+            float maxAccuracyM,
+            float maxStationarySpeedMps) {
+        return !alreadyDrivingOrOwned
+                && hasLocation
+                && locationAgeMs >= 0
+                && locationAgeMs <= maxLocationAgeMs
+                && accuracyM >= 0
+                && accuracyM <= maxAccuracyM
+                && hasSpeed
+                && speedMps >= 0
+                && speedMps <= maxStationarySpeedMps;
+    }
+
     public static boolean isCurrentSnapshot(String owner, String signedInUser,
             String stateOwner, long revision, long currentRevision) {
         return owner != null && !owner.isEmpty() && owner.equals(signedInUser)
