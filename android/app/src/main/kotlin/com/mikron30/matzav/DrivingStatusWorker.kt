@@ -3,6 +3,7 @@ package com.mikron30.matzav
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.location.Location
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
@@ -19,19 +20,37 @@ import java.util.concurrent.TimeUnit
 
 /** Publishes a durable native transition without needing a Flutter engine. */
 class DrivingStatusWorker(context: Context, parameters: WorkerParameters) : Worker(context, parameters) {
-    private data class SyncOutcome(val kind: String, val returnActivity: String? = null)
+    private data class SyncOutcome(
+        val kind: String,
+        val returnActivity: String? = null,
+        val locationResolvedActivity: String? = null,
+    )
+
     private data class GpsEvidence(
         val available: Boolean,
         val ageMs: Long = Long.MAX_VALUE,
         val accuracyM: Float = Float.MAX_VALUE,
         val hasSpeed: Boolean = false,
         val speedMps: Float = Float.MAX_VALUE,
+        val latitude: Double = Double.NaN,
+        val longitude: Double = Double.NaN,
+    )
+
+    private data class SavedZone(
+        val latitude: Double,
+        val longitude: Double,
+        val radiusM: Double,
     )
 
     companion object {
         private const val GPS_GUARD_MAX_AGE_MS = 10L * 60L * 1000L
         private const val GPS_GUARD_MAX_ACCURACY_M = 100f
         private const val GPS_GUARD_STATIONARY_SPEED_MPS = 2.0f
+        private const val ZONE_RESOLUTION_MAX_AGE_MS = 10L * 60L * 1000L
+        private const val ZONE_RESOLUTION_MAX_ACCURACY_M = 75f
+        private const val DEFAULT_ZONE_RADIUS_M = 150.0
+        private const val FLUTTER_ZONES_ENABLED_KEY = "flutter.matzav_auto_zones_v31"
+        private const val FLUTTER_AWAY_ENABLED_KEY = "flutter.matzav_auto_away_v34"
     }
 
     override fun doWork(): Result {
@@ -46,15 +65,29 @@ class DrivingStatusWorker(context: Context, parameters: WorkerParameters) : Work
         val revision = state.getLong(NativeDrivingMonitor.KEY_REVISION, 0L)
         val fallback = state.getString("previous_activity", null)
             ?: state.getString("last_non_driving", "home") ?: "home"
-        val ref = FirebaseFirestore.getInstance().collection("profiles").document(owner)
+        val firestore = FirebaseFirestore.getInstance()
+        val ref = firestore.collection("profiles").document(owner)
+        val privateRef = firestore.collection("private_users").document(owner)
+        val flutterPrefs =
+            applicationContext.getSharedPreferences(NativeDrivingMonitor.FLUTTER_PREFS, Context.MODE_PRIVATE)
+        val legacyDefault =
+            flutterPrefs.getBoolean(NativeDrivingMonitor.FLUTTER_LEGACY_MASTER_KEY, true)
+        val zonesEnabled = flutterPrefs.getBoolean(FLUTTER_ZONES_ENABLED_KEY, legacyDefault)
+        val awayEnabled = flutterPrefs.getBoolean(FLUTTER_AWAY_ENABLED_KEY, zonesEnabled)
 
         recordResult(state, "running")
         val gpsEvidence = readRecentGpsEvidence()
         recordGpsEvidence(state, gpsEvidence)
 
         try {
-            val outcome = Tasks.await(FirebaseFirestore.getInstance().runTransaction { transaction ->
+            val outcome = Tasks.await(firestore.runTransaction { transaction ->
+                val active = NativeDrivingMonitor.isDrivingActive(applicationContext)
                 val snapshot = transaction.get(ref)
+                val shouldResolveLocation =
+                    !active && canResolveActivityFromLocation(gpsEvidence) &&
+                        (zonesEnabled || awayEnabled)
+                val privateSnapshot =
+                    if (shouldResolveLocation) transaction.get(privateRef) else null
                 if (isStopped || !DrivingStatusPolicy.isCurrentSnapshot(owner,
                         FirebaseAuth.getInstance().currentUser?.uid,
                         state.getString(NativeDrivingMonitor.KEY_OWNER, null), revision,
@@ -68,7 +101,6 @@ class DrivingStatusWorker(context: Context, parameters: WorkerParameters) : Work
                 }
                 val overrideActive = NativeDrivingMonitor.callOrSleepActive(applicationContext)
                 if (DrivingStatusPolicy.isDeferred(data, overrideActive)) return@runTransaction SyncOutcome("deferred")
-                val active = NativeDrivingMonitor.isDrivingActive(applicationContext)
                 val alreadyDrivingOrOwned =
                     data["activity"] == "driving" ||
                     data["nativeDrivingDetected"] == true
@@ -85,7 +117,35 @@ class DrivingStatusWorker(context: Context, parameters: WorkerParameters) : Work
                     )) {
                     return@runTransaction SyncOutcome("gps_stationary")
                 }
-                val changes = DrivingStatusPolicy.updates(data, active, overrideActive, fallback, System.currentTimeMillis())
+                val locationResolvedActivity =
+                    if (!active && privateSnapshot != null) {
+                        resolveActivityFromLocation(
+                            privateSnapshot.data,
+                            gpsEvidence,
+                            zonesEnabled,
+                            awayEnabled,
+                        )
+                    } else {
+                        null
+                    }
+
+                // For a native-owned trip, a reliable destination fix is
+                // stronger than the status that happened to be active before
+                // the trip. This makes a background EXIT at work restore
+                // "work" instead of "home" without needing Flutter to open.
+                if (locationResolvedActivity != null &&
+                    data["nativeDrivingDetected"] == true &&
+                    data["activity"] == "driving") {
+                    data["nativeDrivingPreviousActivity"] = locationResolvedActivity
+                }
+
+                val changes = DrivingStatusPolicy.updates(
+                    data,
+                    active,
+                    overrideActive,
+                    fallback,
+                    System.currentTimeMillis(),
+                )
                 if (changes.isNotEmpty()) {
                     val updates = hashMapOf<String, Any>()
                     for ((key, value) in changes) updates[key] = value ?: FieldValue.delete()
@@ -98,10 +158,17 @@ class DrivingStatusWorker(context: Context, parameters: WorkerParameters) : Work
                 } else {
                     changes["activity"] as? String ?: data["activity"] as? String
                 }
-                SyncOutcome("applied", returnActivity?.takeIf { DrivingStatusPolicy.stable(it) })
+                SyncOutcome(
+                    "applied",
+                    returnActivity?.takeIf { DrivingStatusPolicy.stable(it) },
+                    locationResolvedActivity,
+                )
             }, 20, TimeUnit.SECONDS)
 
             recordResult(state, outcome.kind)
+            outcome.locationResolvedActivity?.let {
+                recordLocationResolvedActivity(state, it, gpsEvidence)
+            }
 
             if (outcome.kind == "missing") return Result.retry()
 
@@ -158,10 +225,90 @@ class DrivingStatusWorker(context: Context, parameters: WorkerParameters) : Work
                 accuracyM = location.accuracy,
                 hasSpeed = location.hasSpeed(),
                 speedMps = location.speed,
+                latitude = location.latitude,
+                longitude = location.longitude,
             )
         } catch (_: Exception) {
             GpsEvidence(false)
         }
+    }
+
+    private fun canResolveActivityFromLocation(gps: GpsEvidence): Boolean {
+        return gps.available &&
+            gps.ageMs in 0..ZONE_RESOLUTION_MAX_AGE_MS &&
+            gps.accuracyM in 0f..ZONE_RESOLUTION_MAX_ACCURACY_M &&
+            !gps.latitude.isNaN() &&
+            !gps.longitude.isNaN()
+    }
+
+    private fun resolveActivityFromLocation(
+        privateData: Map<String, Any>?,
+        gps: GpsEvidence,
+        zonesEnabled: Boolean,
+        awayEnabled: Boolean,
+    ): String? {
+        if (!canResolveActivityFromLocation(gps)) return null
+
+        val zones = privateData?.get("zones") as? Map<*, *> ?: return null
+        val home = readZone(zones["home"])
+        val work = readZone(zones["work"])
+        val hobby = readZone(zones["hobby"])
+        val dogWalk = readZone(zones["dogWalk"])
+
+        if ((zonesEnabled || awayEnabled) && home != null && inside(gps, home)) {
+            return "home"
+        }
+
+        if (zonesEnabled) {
+            if (work != null && inside(gps, work)) return "work"
+            if (hobby != null && inside(gps, hobby)) return "hobby"
+            if (dogWalk != null && inside(gps, dogWalk)) return "dogWalk"
+        }
+
+        if (awayEnabled && home != null) {
+            val homeDistance = distanceMeters(gps, home)
+            // Near a zone boundary, GPS uncertainty should not manufacture an
+            // "away" status. Fall back to the pre-trip activity instead.
+            if (homeDistance > home.radiusM + gps.accuracyM) return "away"
+        }
+
+        return null
+    }
+
+    private fun readZone(raw: Any?): SavedZone? {
+        val map = raw as? Map<*, *> ?: return null
+        val latitude = (map["lat"] as? Number)?.toDouble() ?: return null
+        val longitude = (map["lng"] as? Number)?.toDouble() ?: return null
+        val radius = (map["radius"] as? Number)?.toDouble() ?: DEFAULT_ZONE_RADIUS_M
+        return SavedZone(latitude, longitude, radius)
+    }
+
+    private fun inside(gps: GpsEvidence, zone: SavedZone): Boolean =
+        distanceMeters(gps, zone) <= zone.radiusM
+
+    private fun distanceMeters(gps: GpsEvidence, zone: SavedZone): Double {
+        val result = FloatArray(1)
+        Location.distanceBetween(
+            gps.latitude,
+            gps.longitude,
+            zone.latitude,
+            zone.longitude,
+            result,
+        )
+        return result[0].toDouble()
+    }
+
+    private fun recordLocationResolvedActivity(
+        state: android.content.SharedPreferences,
+        activity: String,
+        gps: GpsEvidence,
+    ) {
+        state.edit()
+            .putString("last_location_return_activity", activity)
+            .putLong("last_location_return_at", System.currentTimeMillis())
+            .putLong("last_location_return_gps_age_ms", gps.ageMs)
+            .putFloat("last_location_return_accuracy_m", gps.accuracyM)
+            .apply()
     }
 
     private fun recordGpsEvidence(
