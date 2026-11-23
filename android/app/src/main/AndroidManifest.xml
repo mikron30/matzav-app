@@ -14,6 +14,13 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Phone/call automation is optional. Explicitly prevent Google Play from
+         treating CALL_PHONE / READ_PHONE_STATE as a hardware requirement so
+         tablets and other devices without cellular telephony remain eligible. -->
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
+
     <application
         android:label="Matzav"
         android:name="${applicationName}"
