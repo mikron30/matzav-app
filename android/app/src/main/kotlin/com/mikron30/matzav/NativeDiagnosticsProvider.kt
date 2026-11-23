@@ -106,6 +106,15 @@ class NativeDiagnosticsProvider : ContentProvider(),
                 put("gpsGuardSpeedKmh",
                     if (drive.contains("last_gps_guard_speed_mps"))
                         drive.getFloat("last_gps_guard_speed_mps", -1f) * 3.6f else -1f)
+                put("lastLocationReturnActivity",
+                    drive.getString("last_location_return_activity", null) ?: "none")
+                put("lastLocationReturnAt",
+                    drive.getLong("last_location_return_at", 0L))
+                put("lastLocationReturnGpsAgeMs",
+                    drive.getLong("last_location_return_gps_age_ms", -1L))
+                put("lastLocationReturnAccuracyM",
+                    if (drive.contains("last_location_return_accuracy_m"))
+                        drive.getFloat("last_location_return_accuracy_m", -1f) else -1f)
             })
 
             put("automatic", JSONObject().apply {
